@@ -217,6 +217,10 @@ def read(frame: np.ndarray, boxes: list[tuple[str, float, float, float, float]] 
             for name, y, c0, c1 in feet:
                 if top <= y < top + LANE and name in FILLS.get(kind, ()):
                     solid[max(int(c0), 0) : max(int(np.ceil(c1)), 0)] = 1
+                # a car or train one lane nearer the camera stands in front of this lane, what is behind it is unknown
+                elif kind in (ROAD, RAIL) and top + LANE <= y < top + 2 * LANE and name in ("vehicle", "train"):
+                    seen = seen.copy()
+                    seen[max(int(c0 - LEAN * LANE), 0) : max(int(np.ceil(c1)), 0)] = False
         lanes.append(Lane(row, kind, top, solid, seen, signal))
         row += 1
     return View(phase, lanes, bool(over), bool(home))
