@@ -17,6 +17,7 @@ STAY = 0.35  # how long the last spot of a plan must stay safe
 MAX_SPEED = 300  # px per second along a lane
 WINDOW = (0.1, 0.6)  # how far back, in seconds, frames are lined up to measure a lane's speed
 MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.0), "wait": (0, 0.0)}
+COSTS = {"up": 0.0, "left": 1.0, "right": 1.0, "down": 1.0, "wait": 0.3}
 
 
 class Track:
@@ -26,6 +27,7 @@ class Track:
         self.kinds: Counter[str] = Counter()
         self.history: deque[tuple[float, np.ndarray, np.ndarray]] = deque(maxlen=30)
         self.speeds: deque[float] = deque(maxlen=20)
+        self.speed = 0.0
         # columns we hopped at and bounced off, whatever was there was not seen
         self.blocked: list[float] = []
         self.signal_at = -1e9
@@ -36,9 +38,10 @@ class Track:
     def kind(self) -> str | None:
         return self.kinds.most_common(1)[0][0] if self.kinds else None
 
-    @property
-    def speed(self) -> float:
-        return float(np.median(self.speeds)) if self.speeds else 0.0
+    def measure(self, v: float) -> None:
+        # the planner asks for the speed thousands of times a frame, so the median is kept, not recomputed
+        self.speeds.append(v)
+        self.speed = float(np.median(self.speeds))
 
     @property
     def measured(self) -> bool:
@@ -72,7 +75,7 @@ class Track:
         if self.kind in (ROAD, WATER) and (moving & (lane.solid > 0.5)).sum() >= 12:
             v = self.fit(t, lane.solid, moving)
             if v is not None:
-                self.speeds.append(v)
+                self.measure(v)
         self.history.append((t, lane.solid, lane.seen))
 
     def fit(self, t: float, solid: np.ndarray, moving: np.ndarray) -> float | None:
@@ -204,30 +207,41 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
         track = world.tracks.get(at)
         return c + track.speed * dt if track is not None and track.kind == WATER else c
 
-    def go(at: int, c: float, t: float, left: int, first: str | None, cost: float):
-        nonlocal best
-        if not safe(world.tracks.get(at), c, t, t + STAY):
-            pass
-        elif first is not None:
-            score = (lane - at) * 10 - cost
-            if score > best[0]:
-                best = (score, first)
-        if left == 0:
-            return
-        for name, (dl, dc) in MOVES.items():
-            to, tc = at + dl, drift(at, c, STEP) + dc
-            here = world.tracks.get(at)
-            there = world.tracks.get(to)
-            if name == "wait":
-                if not safe(here, c, t, t + STEP) or (here and here.kind == RAIL):
-                    continue
-            # after landing we stay put until the next hop can go
-            elif not (safe(here, c, t, t + HOP / 2) and safe(there, tc, t + HOP / 2, t + STEP)):
-                continue
-            go(to, tc, t + STEP, left - 1, first or name, cost + (0 if name == "up" else 0.3 if name == "wait" else 1))
+    memo: dict[tuple, float] = {}
 
-    go(lane, c, now + LAG, depth, None, 0)
-    if best[0] > -1e9:
+    def value(at: int, c: float, t: float, left: int) -> float:
+        """Best score reachable from standing at c in lane at at time t, many paths meet the same spots."""
+        key = (at, round(c), round(t, 3), left)
+        if key in memo:
+            return memo[key]
+        here = world.tracks.get(at)
+        out = (lane - at) * 10.0 if safe(here, c, t, t + STAY) else -1e9
+        if left > 0:
+            for name, (dl, dc) in MOVES.items():
+                to, tc = at + dl, drift(at, c, STEP) + dc
+                if name == "wait":
+                    if not safe(here, c, t, t + STEP) or (here and here.kind == RAIL):
+                        continue
+                # after landing we stay put until the next hop can go
+                elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
+                    continue
+                out = max(out, value(to, tc, t + STEP, left - 1) - COSTS[name])
+        memo[key] = out
+        return out
+
+    t = now + LAG
+    here = world.tracks.get(lane)
+    for name, (dl, dc) in MOVES.items():
+        to, tc = lane + dl, drift(lane, c, STEP) + dc
+        if name == "wait":
+            if not safe(here, c, t, t + STEP) or (here and here.kind == RAIL):
+                continue
+        elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
+            continue
+        score = value(to, tc, t + STEP, depth - 1) - COSTS[name]
+        if score > best[0]:
+            best = (score, name)
+    if best[0] > -1e8:
         return best[1]
     # nothing is safe for long, so jump to wherever is clear on landing rather than wait to be hit
     t = now + LAG

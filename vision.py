@@ -168,6 +168,8 @@ class Detector:
         self.model = YOLO(weights)
         # the Mac's GPU runs it in about 15 ms, the CPU takes several times that
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+        # the first call takes about a second to set up, better here than mid run
+        self(np.zeros((screen.HEIGHT, screen.WIDTH, 3), np.uint8))
 
     def __call__(self, frame: np.ndarray) -> list[tuple[str, float, float, float, float]]:
         result = self.model.predict(frame, imgsz=960, conf=0.35, verbose=False, device=self.device)[0]

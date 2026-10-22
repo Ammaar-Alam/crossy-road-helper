@@ -22,7 +22,8 @@ def world(lanes: dict[int, tuple[str, float, np.ndarray | None]]) -> bot.World:
     for i, (kind, speed, solid) in lanes.items():
         track = bot.Track()
         track.add(lane(kind, solid), 0.0)
-        track.speeds.extend([speed] * 3)
+        for _ in range(3):
+            track.measure(speed)
         w.tracks[i] = track
     return w
 
