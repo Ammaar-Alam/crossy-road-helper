@@ -17,6 +17,7 @@ BODY = 0.35 * TILE  # half the character's width plus a margin
 STAY = 0.35  # how long the last spot of a plan must stay safe
 ROUTE_AHEAD, ROUTE_BEHIND, ROUTE_SIDE = 4, 3, 7  # lanes and tiles the route finder looks over
 EDGE = 0.3  # hops a route's end is worth per tile away from the middle of the view
+EXPOSED = 2.0  # score lost for ending a plan on a road or rail rather than somewhere cars cannot reach
 MAX_SPEED = 300  # px per second along a lane
 WINDOW = (0.1, 0.6)  # how far back, in seconds, frames are lined up to measure a lane's speed
 MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.0), "wait": (0, 0.0)}
@@ -33,6 +34,7 @@ class Track:
         self.speed = 0.0
         # columns we hopped at and bounced off, whatever was there was not seen
         self.blocked: list[float] = []
+        self.bounced: list[float] = []
         self.signal_at = -1e9
         # since when each column has been solid, things that never move are not traffic
         self.since = np.full(V.COLUMNS, np.inf)
@@ -134,8 +136,8 @@ class Track:
 
     def train(self) -> bool:
         t, solid, seen = self.history[-1]
-        # the warning light flashes, so it counts for a while after each flash
-        return t - self.signal_at < 1.0 or bool((solid[seen] > 0.5).mean() > 0.15)
+        # the warning light flashes, so it counts for a while after each flash, and trains are long, any of one is too close
+        return t - self.signal_at < 1.0 or bool((solid[seen] > 0.5).any())
 
 
 class World:
@@ -258,12 +260,12 @@ def routes(world: World, lane: int, c: float, now: float) -> dict[tuple[int, int
     middle = (view[0] + view[-1]) / 2 if len(view) else c
     hops = {(goal, k): EDGE * abs(c + k * TILE - middle) / TILE
             for k in range(-ROUTE_SIDE, ROUTE_SIDE + 1) if cost(goal, k) is not None}
-    heap = [(0.0, cell) for cell in hops]
+    heap = [(d, cell) for cell, d in hops.items()]
     while heap:
         d, (at, k) = heapq.heappop(heap)
         if d > hops.get((at, k), np.inf):
             continue
-        enter = cost(at, k) if at != goal else 0.0
+        enter = cost(at, k)
         for nl, nk in ((at + 1, k), (at - 1, k), (at, k - 1), (at, k + 1)):
             if not (goal <= nl <= lane + ROUTE_BEHIND and abs(nk) <= ROUTE_SIDE) or cost(nl, nk) is None:
                 continue
@@ -294,7 +296,9 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
         key = (at, round(c), round(t, 3), left)
         if key in memo:
             return memo[key]
-        out = -10.0 * togo(at, c) if safe(world.tracks.get(at), c, t, t + STAY) else -1e9
+        track = world.tracks.get(at)
+        exposed = EXPOSED if track is not None and track.kind in (ROAD, RAIL) else 0.0
+        out = -10.0 * togo(at, c) - exposed if safe(track, c, t, t + STAY) else -1e9
         if left > 0:
             for name in MOVES:
                 score = attempt(at, c, t, left, name)

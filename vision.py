@@ -187,6 +187,10 @@ def read(frame: np.ndarray, boxes: list[tuple[str, float, float, float, float]] 
 
     img = shear(frame)
     m = masks(img)
+    # red cabs and tail lights are not the crossing's warning light
+    for name, x0, y0, x1, y1 in boxes or []:
+        if name == "vehicle":
+            cv2.fillConvexPoly(m["glow"].view(np.uint8), np.int32([to_sheared(x, y) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]), 0)
     phase = lane_phase(m)
     lanes = []
     if phase is None:
@@ -219,7 +223,7 @@ def read(frame: np.ndarray, boxes: list[tuple[str, float, float, float, float]] 
                 if top <= y < top + LANE and name in FILLS.get(kind, ()):
                     solid[max(int(c0), 0) : max(int(np.ceil(c1)), 0)] = 1
                 # a car or train one lane nearer the camera stands in front of this lane, what is behind it is unknown
-                elif kind in (ROAD, RAIL) and top + LANE <= y < top + 2 * LANE and name in ("vehicle", "train"):
+                elif kind == ROAD and top + LANE <= y < top + 2 * LANE and name in ("vehicle", "train"):
                     seen = seen.copy()
                     seen[max(int(c0 - LEAN * LANE), 0) : max(int(np.ceil(c1)), 0)] = False
         here = {name for name, y, _, _ in feet if top <= y < top + LANE}

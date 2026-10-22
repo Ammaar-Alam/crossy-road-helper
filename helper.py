@@ -89,7 +89,7 @@ class Brain:
     def _expected(self, t: float) -> list[tuple[float, float]]:
         """Where the character could be now, from where it was seen and the moves still landing."""
         lane, col = self.pos
-        track = self.world.tracks.get(int(lane))
+        track = self.world.tracks.get(lane_of(lane))
         if track is not None and track.kind == V.WATER:
             col += track.speed * (t - self.seen_at)
         spots = [(lane, col)]
@@ -142,11 +142,16 @@ class Brain:
                 dl, dc = bot.MOVES[move]
                 track = self.world.tracks.get(lane_of(lane) + dl)
                 if track is not None and track.kind == V.GRASS:
-                    track.blocked.append(col + dc)
+                    spot = col + dc
+                    # one missed swipe is not a tree, a second bounce at the same spot is
+                    if any(abs(b - spot) < V.TILE / 2 for b in track.bounced):
+                        track.blocked.append(spot)
+                    track.bounced.append(spot)
         self.pending = [p for p in self.pending if t - p[0] < bot.LAG + bot.HOP + 0.25]
         box = None if self.pos is None or self.lost > 8 else self._box(self._expected(t))
         self.near = self._spot(boxes, box)
-        if self.near is None:
+        # colors are only a fallback without the detector, a blue character over a blue river finds the river
+        if self.near is None and boxes is None:
             self.near = self.player.find(frame) if box is None else self.player.find(frame, box)
         if self.near is not None:
             hide(self.view, *V.to_sheared(*self.near))
