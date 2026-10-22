@@ -16,6 +16,7 @@ LAG = 0.15  # seconds from the frame we read to our touch reaching the phone
 BODY = 0.35 * TILE  # half the character's width plus a margin
 STAY = 0.35  # how long the last spot of a plan must stay safe
 ROUTE_AHEAD, ROUTE_BEHIND, ROUTE_SIDE = 4, 3, 7  # lanes and tiles the route finder looks over
+EDGE = 0.3  # hops a route's end is worth per tile away from the middle of the view
 MAX_SPEED = 300  # px per second along a lane
 WINDOW = (0.1, 0.6)  # how far back, in seconds, frames are lined up to measure a lane's speed
 MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.0), "wait": (0, 0.0)}
@@ -225,7 +226,12 @@ def routes(world: World, lane: int, c: float, now: float) -> dict[tuple[int, int
     goal = lane - ROUTE_AHEAD
     while goal < lane and world.tracks.get(goal) is None:
         goal += 1
-    hops = {(goal, k): 0.0 for k in range(-ROUTE_SIDE, ROUTE_SIDE + 1) if cost(goal, k) is not None}
+    # ending near the middle of what can be seen leaves ways open on both sides, the edge leaves one or none
+    track = world.tracks.get(goal)
+    view = np.flatnonzero(track.history[-1][2]) if track is not None and track.history else np.array([c])
+    middle = (view[0] + view[-1]) / 2 if len(view) else c
+    hops = {(goal, k): EDGE * abs(c + k * TILE - middle) / TILE
+            for k in range(-ROUTE_SIDE, ROUTE_SIDE + 1) if cost(goal, k) is not None}
     heap = [(0.0, cell) for cell in hops]
     while heap:
         d, (at, k) = heapq.heappop(heap)
@@ -262,32 +268,31 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
         key = (at, round(c), round(t, 3), left)
         if key in memo:
             return memo[key]
-        here = world.tracks.get(at)
-        out = -10.0 * togo(at, c) if safe(here, c, t, t + STAY) else -1e9
+        out = -10.0 * togo(at, c) if safe(world.tracks.get(at), c, t, t + STAY) else -1e9
         if left > 0:
-            for name, (dl, dc) in MOVES.items():
-                to, tc = at + dl, drift(at, c, STEP) + dc
-                if name == "wait":
-                    if not safe(here, c, t, t + STEP):
-                        continue
-                # after landing we stay put until the next hop can go
-                elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
-                    continue
-                out = max(out, value(to, tc, t + STEP, left - 1) - COSTS[name])
+            for name in MOVES:
+                score = attempt(at, c, t, left, name)
+                if score is not None:
+                    out = max(out, score)
         memo[key] = out
         return out
 
-    t = now + LAG
-    here = world.tracks.get(lane)
-    for name, (dl, dc) in MOVES.items():
-        to, tc = lane + dl, drift(lane, c, STEP) + dc
+    def attempt(at: int, c: float, t: float, left: int, name: str) -> float | None:
+        """Score of making a move from here, None if it is not safe."""
+        here = world.tracks.get(at)
+        dl, dc = MOVES[name]
+        to, tc = at + dl, drift(at, c, STEP) + dc
         if name == "wait":
             if not safe(here, c, t, t + STEP):
-                continue
+                return None
+        # after landing we stay put until the next hop can go
         elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
-            continue
-        score = value(to, tc, t + STEP, depth - 1) - COSTS[name]
-        if score > best[0]:
+            return None
+        return value(to, tc, t + STEP, left - 1) - COSTS[name]
+
+    for name in MOVES:
+        score = attempt(lane, c, now + LAG, depth, name)
+        if score is not None and score > best[0]:
             best = (score, name)
     if best[0] > -1e8:
         return best[1]

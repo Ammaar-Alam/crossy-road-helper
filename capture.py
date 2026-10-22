@@ -113,6 +113,11 @@ class Mouse:
         import Quartz
 
         event = Quartz.CGEventCreateMouseEvent(None, kind, point, Quartz.kCGMouseButtonLeft)
+        # a real press says one click and full pressure until the lift, made up events leave both at zero
+        pressed = kind in (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseDragged)
+        if kind != Quartz.kCGEventMouseMoved:
+            Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventClickState, 1)
+        Quartz.CGEventSetDoubleValueField(event, Quartz.kCGMouseEventPressure, 1.0 if pressed else 0.0)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
     def tap(self, point: tuple[float, float]) -> None:
