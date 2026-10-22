@@ -107,7 +107,7 @@ class Brain:
         pts = []
         for lane, col in spots:
             y = (lane + self.world.scroll) * V.LANE + self.world.phase
-            pts.append(V.to_canonical(col - V.LEAN * y, y))
+            pts.append(V.to_canonical(col + self.world.pan - V.LEAN * y, y))
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         # a hop arcs up and the camera keeps sliding down
         return min(xs) - 35, max(xs) + 35, min(ys) - 45, max(ys) + 35
@@ -133,6 +133,9 @@ class Brain:
         if self.view.phase is None:
             return None
         self.world.follow(self.view)
+        if boxes is not None:
+            feet = [V.footprint(*corners) for name, *corners in boxes if name in ("tree", "rock", "lily_pad")]
+            self.world.slide([(int((y - self.world.phase) // V.LANE), (c0 + c1) / 2) for y, c0, c1 in feet])
         # moves that should have landed long ago and never showed up did not happen, something was in the way
         for sent_at, move, (lane, col) in self.pending:
             if t - sent_at >= bot.LAG + bot.HOP + 0.25 and move != "wait":
@@ -154,7 +157,7 @@ class Brain:
             return None
         self.lost = 0
         x, y = V.to_sheared(*self.near)
-        self.pos = ((y - self.world.phase) / V.LANE - self.world.scroll, V.column(x, y))
+        self.pos = ((y - self.world.phase) / V.LANE - self.world.scroll, V.column(x, y) - self.world.pan)
         self.seen_at = t
         # a move has landed once the character got at least half way
         while self.pending:
@@ -210,8 +213,8 @@ class Brain:
                 cv2.putText(img, f"{track.speed:+.0f}", (8, y0 + 14), 0, 0.3, (255, 255, 255), 1)
             yc = int(lane.top + V.LANE / 2)
             for x in range(V.WIDTH):
-                col = int(round(V.column(x, yc)))
-                if lane.seen[col] and lane.solid[col] > 0.5:
+                col = int(round(V.column(x, yc) - self.world.pan))
+                if 0 <= col < len(lane.seen) and lane.seen[col] and lane.solid[col] > 0.5:
                     img[yc - 1 : yc + 2, x] = (0, 255, 0) if lane.kind == V.WATER else (0, 0, 255)
         if self.near is not None:
             x, y = V.to_sheared(*self.near)

@@ -145,6 +145,9 @@ class World:
         self.scroll = 0
         self.phase: float | None = None
         self.tracks: dict[int, Track] = {}
+        # how far the camera has slid sideways following the character, columns are kept fixed to the world
+        self.pan = 0.0
+        self.statics: list[tuple[int, float]] = []
 
     def update(self, view: V.View, t: float) -> None:
         self.follow(view)
@@ -167,14 +170,37 @@ class World:
             self.scroll = max((near, near + 1, near - 1), key=lambda s: (fit(s), s == near))
         self.phase = view.phase
 
+    def slide(self, statics: list[tuple[int, float]]) -> None:
+        """Follow the camera sliding sideways, from screen columns of things that never move, by lane row."""
+        now = [(row - self.scroll, col) for row, col in statics]
+        moved = [min((col - c0 for l0, c0 in self.statics if l0 == lane), key=abs, default=None) for lane, col in now]
+        moved = [d for d in moved if d is not None and abs(d) < 25]
+        if len(moved) >= 2:
+            self.pan += float(np.median(moved))
+        self.statics = now
+
     def add(self, view: V.View, t: float) -> None:
         if view.phase is None:
             return
+        k = -int(round(self.pan))
         ids = set()
         for lane in view.lanes:
+            lane.solid, lane.seen = shifted(lane.solid, k, 0.0), shifted(lane.seen, k, False)
+            if lane.hidden is not None:
+                lane.hidden = shifted(lane.hidden, k, False)
             ids.add(lane.row - self.scroll)
             self.tracks.setdefault(lane.row - self.scroll, Track()).add(lane, t)
         self.tracks = {k: v for k, v in self.tracks.items() if k in ids}
+
+
+def shifted(a: np.ndarray, k: int, fill) -> np.ndarray:
+    """a moved k places along, what comes in is fill."""
+    out = np.full_like(a, fill)
+    if k >= 0:
+        out[k:] = a[: len(a) - k]
+    else:
+        out[:k] = a[-k:]
+    return out
 
 
 def safe(track: Track | None, c: float, t0: float, t1: float) -> bool:
