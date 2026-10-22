@@ -20,7 +20,7 @@ MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.
 
 def shift_of(a: np.ndarray, sa: np.ndarray, b: np.ndarray, sb: np.ndarray, lo: int, hi: int) -> float | None:
     """How far profile a moved to become b, searched over lo..hi px, None when there is nothing to line up."""
-    if a[sa].std() < 0.1:
+    if sa.sum() < 2 or a[sa].std() < 0.1:
         return None
     scores = {}
     for s in range(lo - 1, hi + 2):
@@ -176,4 +176,12 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
             go(to, tc, t + HOP, left - 1, first or name, cost + (0 if name == "up" else 0.3 if name == "wait" else 1))
 
     go(lane, c, now + LAG, depth, None, 0)
-    return best[1]
+    if best[0] > -1e9:
+        return best[1]
+    # nothing is safe for long, so jump to wherever is clear on landing rather than wait to be hit
+    t = now + LAG
+    for name in ("up", "left", "right", "down"):
+        dl, dc = MOVES[name]
+        if safe(world.tracks.get(lane + dl), drift(lane, c, HOP) + dc, t + HOP / 2, t + HOP + 0.05):
+            return name
+    return "wait"

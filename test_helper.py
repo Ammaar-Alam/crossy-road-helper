@@ -63,6 +63,11 @@ class Plans(unittest.TestCase):
         w = world({0: (V.WATER, 0, car(320, 80)), 1: (V.GRASS, 0, None)})
         self.assertEqual(bot.plan(w, 1, 350, 0.0, depth=1), "up")
 
+    def test_escapes_a_car_it_cannot_outwait(self):
+        # a car is about to hit us and the lane ahead is clear now but not for long
+        w = world({0: (V.ROAD, -150, car(500)), 1: (V.ROAD, 150, car(250)), 2: (V.GRASS, 0, None)})
+        self.assertEqual(bot.plan(w, 1, 350, 0.0), "up")
+
     def test_speed_from_a_moving_profile(self):
         track = bot.Track()
         for i in range(12):

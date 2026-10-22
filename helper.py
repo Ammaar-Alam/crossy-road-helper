@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import sys
 import threading
 import time
@@ -130,6 +131,33 @@ def replay(video: Path, out: Path, fps: float) -> None:
         print(f"{len(spent)} frames, {np.mean(spent) * 1000:.0f} ms mean, {np.max(spent) * 1000:.0f} ms worst -> {out}")
 
 
+class Recorder:
+    """Lossless video of a run with one line per frame (time, move, whether it was sent, character),
+    written off the play loop so recording never slows play."""
+
+    def __init__(self, stem: Path):
+        self._video = cv2.VideoWriter(str(stem.with_suffix(".avi")), cv2.VideoWriter_fourcc(*"HFYU"), 30,
+                                      (screen.WIDTH, screen.HEIGHT))
+        self._log = open(stem.with_suffix(".txt"), "w")
+        self._queue: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._write, daemon=True)
+        self._thread.start()
+
+    def add(self, frame: np.ndarray, line: str) -> None:
+        self._queue.put((frame, line))
+
+    def _write(self) -> None:
+        while (item := self._queue.get()) is not None:
+            self._video.write(item[0])
+            self._log.write(item[1] + "\n")
+
+    def close(self) -> None:
+        self._queue.put(None)
+        self._thread.join()
+        self._video.release()
+        self._log.close()
+
+
 class Helper:
     """The live loop, it reports progress through on_state and stops when the mouse moves."""
 
@@ -205,20 +233,16 @@ class Helper:
             return
 
         brain = Brain(canon)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
         (ROOT / "captures" / "live").mkdir(parents=True, exist_ok=True)
-        video = cv2.VideoWriter(str(ROOT / "captures" / "live" / f"{stamp}.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), 30,
-                                (screen.WIDTH, screen.HEIGHT))
-        with open(ROOT / "captures" / "live" / f"{stamp}.txt", "w") as times:
-            # the home frame goes first so a replay can learn the character from it
-            video.write(canon)
-            times.write(f"{time.monotonic():.4f}\n")
-            try:
-                self._run_one(window, mouse, touch, brain, size, rect, video, times)
-            finally:
-                video.release()
+        recorder = Recorder(ROOT / "captures" / "live" / time.strftime("%Y%m%d-%H%M%S"))
+        # the home frame goes first so a replay can learn the character from it
+        recorder.add(canon, f"{time.monotonic():.4f} - 0")
+        try:
+            self._run_one(window, mouse, touch, brain, size, rect, recorder)
+        finally:
+            recorder.close()
 
-    def _run_one(self, window, mouse, touch, brain, size, rect, video, times) -> None:
+    def _run_one(self, window, mouse, touch, brain, size, rect, recorder) -> None:
         mouse.tap(touch(TAP, size, rect))
         began, busy, lost = time.monotonic(), time.monotonic() + bot.HOP, 0
         self._set(status="playing", score=0)
@@ -230,10 +254,10 @@ class Helper:
             if got is None:
                 continue
             canon, t, size, rect = got
-            video.write(canon)
             move = brain.step(canon, t)
             acted = move not in (None, "wait") and t >= busy
-            times.write(f"{t:.4f} {move if acted else ''}\n")
+            where = " ".join(f"{v:.0f}" for v in brain.near) if brain.near else ""
+            recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}")
             if brain.view.over:
                 self._set(status="over", score=brain.best, best=max(self.state["best"], brain.best), runs=self.state["runs"] + 1)
                 return
