@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import queue
+import random
 import sys
 import threading
 import time
@@ -24,6 +25,9 @@ TAP = (332, 500)  # clear of the score, the pause button and the banners on the 
 PLAY = (332, 1325)  # the big play button after a splat
 SWIPE = 90  # screen points
 TITLE = 1.5  # seconds the title stays over the lanes after the first tap
+# swipe styles tried at random during play, logged with each swipe, the phone sometimes misses the lift of a swipe
+STYLES = [dict(steps=8, gap=0.012, hold=0.012), dict(steps=8, gap=0.012, hold=0.06),
+          dict(steps=4, gap=0.02, hold=0.04), dict(steps=12, gap=0.008, hold=0.03)]
 ARC = 0.3
 AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
 MODEL = ROOT / "models" / "detector.pt"
@@ -356,48 +360,6 @@ class Helper:
             time.sleep(0.1)
         return None
 
-    def swipes(self) -> None:
-        """Start a run and try a few swipe speeds on the starting grass, then say what each one did."""
-        window = capture.place_window()
-        if window is None:
-            print("Open iPhone Mirroring")
-            return
-        mouse = capture.Mouse()
-
-        def touch(point: tuple[float, float], size, rect) -> tuple[float, float]:
-            return capture.to_point(window, size, rect, *point)
-
-        got = self._home(window, mouse, touch)
-        if got is None:
-            print(self.state["error"] or "Could not reach the home screen")
-            return
-        canon, size, rect = got
-        brain = Brain(canon, V.Detector(str(MODEL)) if MODEL.exists() else None)
-
-        def watch(secs: float):
-            end = time.monotonic() + secs
-            while time.monotonic() < end:
-                frame = self._frame(window, rect)
-                if frame is not None:
-                    brain.step(frame[0], frame[1])
-            return brain.pos
-
-        mouse.tap(touch(TAP, size, rect))
-        watch(TITLE)
-        for steps, gap, dist in ((8, 0.012, 90), (12, 0.02, 120), (16, 0.025, 160), (10, 0.015, 220)):
-            outcomes = []
-            for move in ("left", "right", "left", "right"):
-                before = brain.pos
-                mouse.swipe(touch(TAP, size, rect), -dist if move == "left" else dist, 0, steps, gap)
-                after = watch(0.7)
-                if before is None or after is None or brain.view.over:
-                    outcomes.append("lost")
-                    continue
-                dl, dc = after[0] - before[0], after[1] - before[1]
-                outcomes.append("up" if dl < -0.6 else "down" if dl > 0.6 else "left" if dc < -25 else "right" if dc > 25 else "nothing")
-            hits = sum(o == m for o, m in zip(outcomes, ("left", "right", "left", "right")))
-            print(f"{steps} steps, {gap * 1000:.0f} ms apart, {dist} points: {hits}/4 right  ({', '.join(outcomes)})")
-
     def _play(self) -> None:
         window = capture.place_window()
         if window is None:
@@ -450,9 +412,11 @@ class Helper:
             # the title covers the lanes ahead for the first moments, and lane speeds need a few looks anyway
             # one move at a time, the next is planned from where the last one was seen to land
             acted = move not in (None, "wait") and t >= busy and t - began >= TITLE and not brain.pending
+            style = random.randrange(len(STYLES))
             if recorder is not None:
                 where = " ".join(f"{v:.0f}" for v in brain.near) if brain.near else ""
-                recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}")
+                tag = f" s{style}" if acted and move != "up" and where else ""
+                recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}{tag}")
             fps = None if last is None else 1 / max(t - last, 1e-3) if fps is None else 0.9 * fps + 0.1 / max(t - last, 1e-3)
             last = t
             if brain.view.over:
@@ -474,7 +438,7 @@ class Helper:
                 mouse.tap(point)
             else:
                 dx, dy = {"left": (-SWIPE, 0), "right": (SWIPE, 0), "down": (0, SWIPE)}[move]
-                mouse.swipe(point, dx, dy)
+                mouse.swipe(point, dx, dy, **STYLES[style])
             busy = time.monotonic() + bot.HOP
             elapsed = time.monotonic() - began
             self._set(score=brain.best, rate=brain.best / elapsed if elapsed > 1 else None)
@@ -486,7 +450,6 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("ui", help="open the panel (default)")
     sub.add_parser("play", help="play one run without the panel")
-    sub.add_parser("swipes", help="try a few swipe speeds on the starting grass and report which the phone takes")
     r = sub.add_parser("replay", help="run a recording through the helper and save what it saw")
     r.add_argument("video", type=Path)
     r.add_argument("--out", type=Path)
@@ -494,8 +457,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "replay":
         replay(args.video, args.out or args.video.with_name(args.video.stem + "_seen.mp4"), args.fps)
-    elif args.command == "swipes":
-        Helper().swipes()
     elif args.command == "play":
         said = []
 

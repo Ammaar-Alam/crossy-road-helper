@@ -16,7 +16,6 @@ Give your terminal **Screen Recording** (to see the phone) and **Accessibility**
 ```bash
 ./run.sh            # panel beside the phone, press Play
 ./run.sh play       # one run without the panel
-./run.sh swipes     # tries a few swipe speeds on the starting grass and says which ones the phone takes
 ./run.sh replay captures/live/<run>.avi   # what the helper saw, lanes and moves drawn on top
 .venv/bin/python -m unittest -v
 ```
