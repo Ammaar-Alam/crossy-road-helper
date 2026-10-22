@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Gabarito:wght@500;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --asphalt: oklch(0.27 0.012 265);
+    --asphalt-deep: oklch(0.22 0.012 265);
+    --dash: oklch(0.46 0.012 265);
+    --outline: oklch(0.17 0.012 265);
+    --grass: oklch(0.83 0.17 128);
+    --grass-alt: oklch(0.79 0.175 131);
+    --grass-side: oklch(0.6 0.14 134);
+    --snow: oklch(0.98 0.004 250);
+    --muted: oklch(0.72 0.012 265);
+    --coin: oklch(0.88 0.17 96);
+    --go: oklch(0.79 0.16 66);
+    --go-top: oklch(0.86 0.13 72);
+    --go-lip: oklch(0.6 0.15 52);
+    --halt: oklch(0.62 0.21 27);
+    --halt-top: oklch(0.7 0.19 30);
+    --halt-lip: oklch(0.45 0.16 25);
+    --banner: oklch(0.56 0.19 10);
+
+    --pixel: "Silkscreen", ui-monospace, monospace;
+    --body: "Gabarito", "Avenir Next", sans-serif;
+
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 12px;
+    --space-lg: 16px;
+    --space-xl: 24px;
+    --space-2xl: 32px;
+
+    --outlined: 3px 0 var(--outline), -3px 0 var(--outline), 0 3px var(--outline), 0 -3px var(--outline),
+      3px 3px var(--outline), -3px 3px var(--outline), 3px -3px var(--outline), -3px -3px var(--outline),
+      0 6px var(--outline), 3px 6px var(--outline), -3px 6px var(--outline);
+    --outlined-sm: 2px 0 var(--outline), -2px 0 var(--outline), 0 2px var(--outline), 0 -2px var(--outline),
+      2px 2px var(--outline), -2px 2px var(--outline), 2px -2px var(--outline), -2px -2px var(--outline), 0 4px var(--outline);
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--asphalt);
+    color: var(--snow);
+    font: 500 15px/1.45 var(--body);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+    overflow: hidden;
+  }
+
+  .panel { height: 100%; display: flex; flex-direction: column; }
+
+  /* grass lanes, the block's front face is the darker strip along the bottom */
+  .field {
+    flex: none;
+    height: 380px;
+    position: relative;
+    padding: var(--space-xl) var(--space-lg) 0;
+    background: repeating-linear-gradient(180deg, var(--grass) 0 64px, var(--grass-alt) 64px 128px);
+    box-shadow: inset 0 -14px var(--grass-side), 0 8px var(--asphalt-deep);
+  }
+
+  .score {
+    font: 700 128px/1 var(--pixel);
+    font-variant-numeric: tabular-nums;
+    text-shadow: var(--outlined);
+    white-space: nowrap;
+  }
+  /* shrink so a long run still fits the lane */
+  .score[data-len="3"] { font-size: 104px; }
+  .score[data-len="4"] { font-size: 80px; }
+  .top {
+    margin-top: var(--space-md);
+    color: var(--coin);
+    font: 700 24px/1 var(--pixel);
+    font-variant-numeric: tabular-nums;
+    text-shadow: var(--outlined-sm);
+  }
+
+  .ground {
+    position: absolute;
+    left: var(--space-lg);
+    right: var(--space-lg);
+    bottom: 14px;
+    display: flex;
+    align-items: flex-end;
+    pointer-events: none;
+  }
+  .chicken { width: 50px; height: 60px; transform-origin: 50% 100%; transition: transform 220ms var(--ease); }
+  .over .chicken { transform: scale(1.35, 0.3); }
+  .trees { margin-left: auto; display: flex; align-items: flex-end; gap: var(--space-xs); }
+  .tree { width: 40px; height: 60px; }
+  .tree.short { width: 32px; height: 40px; }
+  svg { display: block; shape-rendering: crispEdges; }
+
+  .road { flex: 1; display: flex; flex-direction: column; padding: var(--space-xl) var(--space-lg) var(--space-lg); }
+
+  .status {
+    min-height: 54px;
+    font: 700 24px/1.15 var(--pixel);
+    text-shadow: var(--outlined-sm);
+    text-wrap: balance;
+  }
+
+  /* lane marking between what's happening and the tallies */
+  .stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-lg);
+    margin-top: var(--space-lg);
+    padding-top: var(--space-lg);
+    background: repeating-linear-gradient(90deg, var(--dash) 0 28px, transparent 28px 48px) top / 100% 4px no-repeat;
+  }
+  .stat span { display: block; color: var(--muted); font: 400 12px/1.2 var(--pixel); letter-spacing: 0.04em; }
+  .stat strong {
+    display: block;
+    margin-top: var(--space-xs);
+    font: 700 32px/1.1 var(--pixel);
+    font-variant-numeric: tabular-nums;
+    text-shadow: var(--outlined-sm);
+    white-space: nowrap;
+  }
+
+  .problem {
+    margin: var(--space-xl) calc(-1 * var(--space-lg));
+    padding: var(--space-md) var(--space-lg);
+    background: var(--banner);
+    font-weight: 700;
+    line-height: 1.35;
+  }
+
+  /* chunky block button sitting on its lip */
+  .go {
+    width: 100%;
+    margin-top: auto;
+    height: 64px;
+    border: 0;
+    background: var(--go);
+    color: var(--snow);
+    font: 700 28px/1 var(--pixel);
+    text-shadow: var(--outlined-sm);
+    cursor: pointer;
+    box-shadow: inset 0 4px var(--go-top), inset 0 -10px var(--go-lip), 0 0 0 3px var(--outline);
+    transition: transform 90ms var(--ease), box-shadow 90ms var(--ease);
+  }
+  .go.stop { background: var(--halt); box-shadow: inset 0 4px var(--halt-top), inset 0 -10px var(--halt-lip), 0 0 0 3px var(--outline); }
+  .go:active { transform: translateY(4px); box-shadow: inset 0 4px var(--go-top), inset 0 -6px var(--go-lip), 0 0 0 3px var(--outline); }
+  .go.stop:active { box-shadow: inset 0 4px var(--halt-top), inset 0 -6px var(--halt-lip), 0 0 0 3px var(--outline); }
+  .go:focus-visible { outline: 3px solid var(--coin); outline-offset: 4px; }
+
+  .hint { margin-top: var(--space-md); min-height: 20px; color: var(--muted); font-size: 14px; text-align: center; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<main class="panel" id="panel">
+  <section class="field">
+    <div class="score" id="score" aria-label="Score">0</div>
+    <div class="top" id="top">Top 0</div>
+    <div class="ground" aria-hidden="true">
+      <svg class="chicken" id="chicken" viewBox="0 0 10 12">
+        <rect x="4" y="0" width="2" height="2" fill="oklch(0.6 0.22 27)"/>
+        <rect x="2" y="2" width="6" height="8" fill="oklch(0.98 0.004 250)"/>
+        <rect x="2" y="8" width="6" height="2" fill="oklch(0.86 0.01 250)"/>
+        <rect x="1" y="5" width="1" height="3" fill="oklch(0.9 0.008 250)"/>
+        <rect x="3" y="6" width="3" height="2" fill="oklch(0.86 0.01 250)"/>
+        <rect x="6" y="4" width="1" height="1" fill="oklch(0.17 0.012 265)"/>
+        <rect x="8" y="4" width="2" height="1" fill="oklch(0.78 0.16 62)"/>
+        <rect x="8" y="5" width="1" height="2" fill="oklch(0.6 0.22 27)"/>
+        <rect x="3" y="10" width="1" height="2" fill="oklch(0.74 0.16 58)"/>
+        <rect x="6" y="10" width="1" height="2" fill="oklch(0.74 0.16 58)"/>
+      </svg>
+      <div class="trees">
+        <svg class="tree short" viewBox="0 0 8 10">
+          <rect x="0" y="0" width="8" height="6" fill="oklch(0.64 0.15 124)"/>
+          <rect x="0" y="0" width="8" height="2" fill="oklch(0.74 0.16 121)"/>
+          <rect x="6" y="2" width="2" height="4" fill="oklch(0.56 0.13 126)"/>
+          <rect x="3" y="6" width="2" height="4" fill="oklch(0.38 0.06 35)"/>
+        </svg>
+        <svg class="tree" viewBox="0 0 8 12">
+          <rect x="0" y="0" width="8" height="8" fill="oklch(0.64 0.15 124)"/>
+          <rect x="0" y="0" width="8" height="2" fill="oklch(0.74 0.16 121)"/>
+          <rect x="6" y="2" width="2" height="6" fill="oklch(0.56 0.13 126)"/>
+          <rect x="3" y="8" width="2" height="4" fill="oklch(0.38 0.06 35)"/>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <section class="road">
+    <h1 class="status" id="status" aria-live="polite">Ready</h1>
+    <div class="stats">
+      <div class="stat"><span>Runs</span><strong id="runs">0</strong></div>
+      <div class="stat"><span>Hops/sec</span><strong id="rate">-</strong></div>
+    </div>
+    <p class="problem" id="problem" hidden></p>
+    <button class="go" id="go">Play</button>
+    <p class="hint" id="hint"></p>
+  </section>
+</main>
+
+<script>
+  const STATUS = {
+    idle: "Ready", starting: "Getting set", playing: "Hopping",
+    over: "Splat!", "no phone": "Open iPhone Mirroring", stopped: "Stopped",
+  };
+  const still = matchMedia("(prefers-reduced-motion: reduce)");
+  const $ = (id) => document.getElementById(id);
+
+  let state = { running: false, status: "idle", score: null, best: 0, runs: 0, rate: null, error: null };
+  let shown = null;
+
+  // pywebview's api shows up a beat after the page, so hold the call until it does
+  function call(name) {
+    const api = window.pywebview && window.pywebview.api;
+    if (api && api[name]) api[name]();
+    else window.addEventListener("pywebviewready", () => window.pywebview.api[name](), { once: true });
+  }
+
+  function hop(el, height) {
+    if (still.matches) return;
+    el.animate(
+      [{ transform: "translateY(0)" }, { transform: `translateY(-${height}px)` }, { transform: "translateY(0)" }],
+      { duration: 200, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+    );
+  }
+
+  function draw() {
+    const score = state.score ?? 0;
+    const el = $("score");
+    el.textContent = score;
+    el.dataset.len = Math.min(String(score).length, 4);
+    if (shown !== null && score > shown) { hop(el, 10); hop($("chicken"), 14); }
+    shown = score;
+
+    $("top").textContent = `Top ${state.best ?? 0}`;
+    $("panel").classList.toggle("over", state.status === "over");
+    $("status").textContent = STATUS[state.status] || "Ready";
+    $("runs").textContent = state.runs ?? 0;
+    $("rate").textContent = state.rate == null ? "-" : state.rate.toFixed(1);
+
+    $("problem").hidden = !state.error;
+    $("problem").textContent = state.error || "";
+
+    const go = $("go");
+    go.classList.toggle("stop", state.running);
+    go.textContent = state.running ? "Stop" : "Play";
+    $("hint").textContent = state.running ? "Move the mouse to stop" : "";
+  }
+
+  window.render = (next) => { state = { ...state, ...next }; draw(); };
+
+  $("go").addEventListener("click", () => {
+    if (state.running) { state = { ...state, running: false, status: "stopped" }; call("stop"); }
+    else { state = { ...state, running: true, status: "starting", error: null }; call("start"); }
+    draw();
+  });
+  draw();
+</script>
+</body>
+</html>
