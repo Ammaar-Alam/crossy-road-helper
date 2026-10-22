@@ -93,7 +93,8 @@ class Mouse:
     HOLD = 0.02
 
     def __init__(self):
-        self.last: tuple[float, float] | None = None
+        # start and end of our last tap or swipe
+        self.last: tuple[tuple[float, float], tuple[float, float]] | None = None
 
     def moved(self) -> bool:
         """Whether someone moved the mouse since our last event."""
@@ -102,7 +103,11 @@ class Mouse:
         if self.last is None:
             return False
         p = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-        return abs(p.x - self.last[0]) + abs(p.y - self.last[1]) > 8
+        # the cursor can still be catching up anywhere along our last swipe
+        (x0, y0), (x1, y1) = self.last
+        dx, dy = x1 - x0, y1 - y0
+        k = min(max(((p.x - x0) * dx + (p.y - y0) * dy) / max(dx * dx + dy * dy, 1e-9), 0.0), 1.0)
+        return abs(p.x - (x0 + k * dx)) + abs(p.y - (y0 + k * dy)) > 8
 
     def _post(self, kind: int, point: tuple[float, float]) -> None:
         import Quartz
@@ -117,7 +122,7 @@ class Mouse:
         self._post(Quartz.kCGEventLeftMouseDown, point)
         time.sleep(self.HOLD)
         self._post(Quartz.kCGEventLeftMouseUp, point)
-        self.last = point
+        self.last = point, point
 
     def swipe(self, point: tuple[float, float], dx: float, dy: float, steps: int = 4) -> None:
         import Quartz
@@ -129,4 +134,4 @@ class Mouse:
             self._post(Quartz.kCGEventLeftMouseDragged, (point[0] + dx * i / steps, point[1] + dy * i / steps))
         end = (point[0] + dx, point[1] + dy)
         self._post(Quartz.kCGEventLeftMouseUp, end)
-        self.last = end
+        self.last = point, end
