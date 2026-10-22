@@ -209,18 +209,29 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
 
     memo: dict[tuple, float] = {}
 
+    def toward(at: int, c: float, t: float) -> float:
+        """Credit for standing near somewhere the lane ahead can be entered, a tile closer is worth a sideways hop."""
+        track = world.tracks.get(at)
+        if track is None or track.kind is None or not track.history:
+            return 0.0
+        for d in range(0, 7):
+            for side in ((0,) if d == 0 else (-1, 1)):
+                if safe(track, c + side * d * TILE, t, t + HOP):
+                    return -1.0 * d
+        return -7.0
+
     def value(at: int, c: float, t: float, left: int) -> float:
         """Best score reachable from standing at c in lane at at time t, many paths meet the same spots."""
         key = (at, round(c), round(t, 3), left)
         if key in memo:
             return memo[key]
         here = world.tracks.get(at)
-        out = (lane - at) * 10.0 if safe(here, c, t, t + STAY) else -1e9
+        out = (lane - at) * 10.0 + toward(at - 1, c, t + STEP) if safe(here, c, t, t + STAY) else -1e9
         if left > 0:
             for name, (dl, dc) in MOVES.items():
                 to, tc = at + dl, drift(at, c, STEP) + dc
                 if name == "wait":
-                    if not safe(here, c, t, t + STEP) or (here and here.kind == RAIL):
+                    if not safe(here, c, t, t + STEP):
                         continue
                 # after landing we stay put until the next hop can go
                 elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
@@ -234,7 +245,7 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
     for name, (dl, dc) in MOVES.items():
         to, tc = lane + dl, drift(lane, c, STEP) + dc
         if name == "wait":
-            if not safe(here, c, t, t + STEP) or (here and here.kind == RAIL):
+            if not safe(here, c, t, t + STEP):
                 continue
         elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
             continue

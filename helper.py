@@ -384,7 +384,7 @@ class Helper:
 
         mouse.tap(touch(TAP, size, rect))
         watch(TITLE)
-        for steps, gap, dist in ((4, 0.010, 70), (8, 0.012, 90), (12, 0.016, 110)):
+        for steps, gap, dist in ((8, 0.012, 90), (12, 0.02, 120), (16, 0.025, 160), (10, 0.015, 220)):
             outcomes = []
             for move in ("left", "right", "left", "right"):
                 before = brain.pos
