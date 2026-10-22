@@ -26,8 +26,9 @@ PLAY = (332, 1325)  # the big play button after a splat
 SWIPE = 90  # screen points
 TITLE = 1.5  # seconds the title stays over the lanes after the first tap
 # swipe styles tried at random during play, logged with each swipe, the phone sometimes misses the lift of a swipe
-STYLES = [dict(steps=8, gap=0.012, hold=0.012), dict(steps=8, gap=0.012, hold=0.06),
-          dict(steps=4, gap=0.02, hold=0.04), dict(steps=12, gap=0.008, hold=0.03)]
+# so far resting 40-60 ms before the lift beats lifting right away (10 of 13 against 5 of 15)
+STYLES = [dict(steps=4, gap=0.02, hold=0.04), dict(steps=8, gap=0.012, hold=0.06),
+          dict(steps=4, gap=0.02, hold=0.08), dict(steps=6, gap=0.02, hold=0.06)]
 ARC = 0.3
 AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
 MODEL = ROOT / "models" / "detector.pt"
@@ -47,18 +48,15 @@ def runs(mask: np.ndarray) -> list[list[int]]:
 
 
 def hide(view: V.View, x: float, y: float) -> None:
-    """Mark where the character covers the lanes, it is neither an obstacle nor a missing log."""
+    """Mark where the character covers the lanes, so it is neither taken for a car nor for the log under it."""
     for lane in view.lanes:
         if lane.top > y or lane.top + V.LANE < y - 1.3 * V.LANE:
             continue
         c = round(V.column(x, lane.top + V.LANE / 2))
         span = slice(max(c - round(0.45 * V.TILE), 0), c + round(0.45 * V.TILE))
-        if lane.top + V.LANE > y and lane.kind == V.WATER:
-            # standing on water means standing on something
-            lane.solid[span] = 1
-        elif lane.top + V.LANE > y and lane.kind == V.GRASS:
+        if lane.top + V.LANE > y and lane.kind == V.GRASS:
             lane.solid[span] = 0
-        elif lane.kind in (V.ROAD, V.RAIL):
+        elif lane.kind in (V.ROAD, V.RAIL) or (lane.top + V.LANE > y and lane.kind == V.WATER):
             # its head pokes into the strip read for traffic above, what is behind it comes from earlier looks
             # grass obstacles are found by their base instead
             lane.hidden = np.zeros(len(lane.seen), bool)

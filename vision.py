@@ -46,6 +46,7 @@ class Lane:
     seen: np.ndarray  # per column, whether the lane is on screen there
     signal: bool = False
     hidden: np.ndarray | None = None  # per column, on screen but covered by the character
+    pads: bool = False  # a river whose only platforms are lily pads, which never move
 
 
 @dataclass(slots=True)
@@ -221,7 +222,8 @@ def read(frame: np.ndarray, boxes: list[tuple[str, float, float, float, float]] 
                 elif kind in (ROAD, RAIL) and top + LANE <= y < top + 2 * LANE and name in ("vehicle", "train"):
                     seen = seen.copy()
                     seen[max(int(c0 - LEAN * LANE), 0) : max(int(np.ceil(c1)), 0)] = False
-        lanes.append(Lane(row, kind, top, solid, seen, signal))
+        here = {name for name, y, _, _ in feet if top <= y < top + LANE}
+        lanes.append(Lane(row, kind, top, solid, seen, signal, pads=kind == WATER and "lily_pad" in here and "log" not in here))
         row += 1
     return View(phase, lanes, bool(over), bool(home))
 

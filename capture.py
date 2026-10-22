@@ -90,7 +90,7 @@ def to_point(window: Window, size: tuple[int, int], rect: tuple[int, int, int, i
 class Mouse:
     """Taps and swipes as real mouse events, iPhone Mirroring turns them into touches."""
 
-    HOLD = 0.02
+    HOLD = 0.04  # a finger lifted too soon is sometimes missed by the phone
 
     def __init__(self):
         # start and end of our last tap or swipe

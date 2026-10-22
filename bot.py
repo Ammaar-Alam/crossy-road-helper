@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 from collections import Counter, deque
 
 import numpy as np
@@ -14,6 +15,7 @@ STEP = 0.22  # seconds between our hops, a frame has to come in and be read befo
 LAG = 0.15  # seconds from the frame we read to our touch reaching the phone
 BODY = 0.35 * TILE  # half the character's width plus a margin
 STAY = 0.35  # how long the last spot of a plan must stay safe
+ROUTE_AHEAD, ROUTE_BEHIND, ROUTE_SIDE = 4, 3, 7  # lanes and tiles the route finder looks over
 MAX_SPEED = 300  # px per second along a lane
 WINDOW = (0.1, 0.6)  # how far back, in seconds, frames are lined up to measure a lane's speed
 MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.0), "wait": (0, 0.0)}
@@ -71,8 +73,10 @@ class Track:
         self.since = np.where((lane.solid > 0.5) & lane.seen, np.minimum(self.since, t), np.inf)
         moving = observed & (t - self.since < 0.5)
         # with nothing moving in sight there is nothing to measure, only noise
+        if lane.pads:
+            self.measure(0.0)
         # with nothing moving in sight there is nothing to measure, only noise
-        if self.kind in (ROAD, WATER) and (moving & (lane.solid > 0.5)).sum() >= 12:
+        elif self.kind in (ROAD, WATER) and (moving & (lane.solid > 0.5)).sum() >= 12:
             v = self.fit(t, lane.solid, moving)
             if v is not None:
                 self.measure(v)
@@ -199,6 +203,44 @@ def safe(track: Track | None, c: float, t0: float, t1: float) -> bool:
     return True
 
 
+def routes(world: World, lane: int, c: float, now: float) -> dict[tuple[int, int], float]:
+    """Fewest hops from each spot near the character to a lane well ahead, by lane and tiles sideways.
+
+    Trees and rocks are walls and open water costs extra since a log has to come, traffic is left to the planner.
+    Being boxed in by trees then shows up as a route that steps back and goes round."""
+    def cost(at: int, k: int) -> float | None:
+        track = world.tracks.get(at)
+        if track is None or track.kind is None or not track.history:
+            return None
+        col = c + k * TILE
+        _, solid, seen = track.history[-1]
+        if not BODY <= col < len(solid) - BODY or not seen[int(col)]:
+            return None
+        if track.kind == GRASS:
+            return 1.0 if safe(track, col, now, now) else None
+        if track.kind == WATER:
+            return 1.0 if safe(track, col, now, now) else 2.0
+        return 1.0
+
+    goal = lane - ROUTE_AHEAD
+    while goal < lane and world.tracks.get(goal) is None:
+        goal += 1
+    hops = {(goal, k): 0.0 for k in range(-ROUTE_SIDE, ROUTE_SIDE + 1) if cost(goal, k) is not None}
+    heap = [(0.0, cell) for cell in hops]
+    while heap:
+        d, (at, k) = heapq.heappop(heap)
+        if d > hops.get((at, k), np.inf):
+            continue
+        enter = cost(at, k) if at != goal else 0.0
+        for nl, nk in ((at + 1, k), (at - 1, k), (at, k - 1), (at, k + 1)):
+            if not (goal <= nl <= lane + ROUTE_BEHIND and abs(nk) <= ROUTE_SIDE) or cost(nl, nk) is None:
+                continue
+            if d + enter < hops.get((nl, nk), np.inf):
+                hops[(nl, nk)] = d + enter
+                heapq.heappush(heap, (d + enter, (nl, nk)))
+    return hops
+
+
 def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
     """First move of the plan that gets furthest forward while staying safe."""
     best = (-1e9, "wait")
@@ -209,16 +251,11 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
 
     memo: dict[tuple, float] = {}
 
-    def toward(at: int, c: float, t: float) -> float:
-        """Credit for standing near somewhere the lane ahead can be entered, a tile closer is worth a sideways hop."""
-        track = world.tracks.get(at)
-        if track is None or track.kind is None or not track.history:
-            return 0.0
-        for d in range(0, 7):
-            for side in ((0,) if d == 0 else (-1, 1)):
-                if safe(track, c + side * d * TILE, t, t + HOP):
-                    return -1.0 * d
-        return -7.0
+    hops = routes(world, lane, c, now)
+
+    def togo(at: int, c2: float) -> float:
+        """Hops still needed to get well ahead from here, unreachable spots count as far."""
+        return hops.get((at, round((c2 - c) / TILE)), 30.0)
 
     def value(at: int, c: float, t: float, left: int) -> float:
         """Best score reachable from standing at c in lane at at time t, many paths meet the same spots."""
@@ -226,7 +263,7 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
         if key in memo:
             return memo[key]
         here = world.tracks.get(at)
-        out = (lane - at) * 10.0 + toward(at - 1, c, t + STEP) if safe(here, c, t, t + STAY) else -1e9
+        out = -10.0 * togo(at, c) if safe(here, c, t, t + STAY) else -1e9
         if left > 0:
             for name, (dl, dc) in MOVES.items():
                 to, tc = at + dl, drift(at, c, STEP) + dc
