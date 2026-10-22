@@ -59,14 +59,15 @@ def place_window() -> Window | None:
 
 
 def grab(window: Window) -> np.ndarray | None:
-    """BGR frame of the window at full pixel resolution, works even when covered."""
+    """BGR frame of the window at one pixel per point, works even when covered."""
     import Quartz
 
     image = Quartz.CGWindowListCreateImage(
         Quartz.CGRectNull,
         Quartz.kCGWindowListOptionIncludingWindow,
         window.id,
-        Quartz.kCGWindowImageBoundsIgnoreFraming | Quartz.kCGWindowImageBestResolution,
+        # retina detail costs twice the time and vision works at half size anyway
+        Quartz.kCGWindowImageBoundsIgnoreFraming | Quartz.kCGWindowImageNominalResolution,
     )
     if image is None:
         return None

@@ -24,6 +24,21 @@ SWIPE = 70  # screen points
 COLORS = {V.GRASS: (60, 200, 90), V.ROAD: (120, 120, 120), V.WATER: (250, 200, 90), V.RAIL: (40, 60, 160), None: (0, 0, 255)}
 
 
+def hide(view: V.View, x: float, y: float) -> None:
+    """Take the character out of the lanes it covers, it is neither an obstacle nor a missing log."""
+    for lane in view.lanes:
+        if lane.top > y or lane.top + V.LANE < y - 1.3 * V.LANE:
+            continue
+        c = round(V.column(x, lane.top + V.LANE / 2))
+        span = slice(max(c - round(0.45 * V.TILE), 0), c + round(0.45 * V.TILE))
+        if lane.top + V.LANE > y:
+            # standing on water means standing on something
+            lane.solid[span] = 1 if lane.kind == V.WATER else 0
+        elif lane.kind in (V.ROAD, V.RAIL):
+            # its head pokes into the strip read for traffic, grass obstacles are found by their base instead
+            lane.solid[span] = 0
+
+
 class Brain:
     """Everything between a canonical frame and the next move, shared by live play and replays."""
 
@@ -41,11 +56,11 @@ class Brain:
         self.view = V.read(frame)
         if self.view.over or self.view.home:
             return None
-        self.world.update(self.view, t)
-        if self.world.phase is None:
-            return None
         self.near = self.player.find(frame, self.near) or self.player.find(frame)
-        if self.near is None:
+        if self.near is not None:
+            hide(self.view, *V.to_sheared(*self.near))
+        self.world.update(self.view, t)
+        if self.world.phase is None or self.near is None:
             self.spot = None
             return None
         x, y = V.to_sheared(*self.near)
@@ -84,7 +99,7 @@ def replay(video: Path, out: Path, fps: float) -> None:
     cap = cv2.VideoCapture(str(video))
     # live runs keep their real frame times next to the video
     times = video.with_suffix(".txt")
-    stamps = [float(line) for line in times.read_text().split()] if times.exists() else None
+    stamps = [float(line.split()[0]) for line in times.read_text().splitlines()] if times.exists() else None
     step = 1 if stamps else max(1, round(cap.get(cv2.CAP_PROP_FPS) / fps))
     writer, brain, i, spent = None, None, 0, []
     while True:
@@ -148,12 +163,13 @@ class Helper:
             status = self.state["status"] if self.state["status"] in ("over", "no phone") else "stopped"
             self._set(running=False, status=status)
 
-    def _frame(self, window: capture.Window) -> tuple[np.ndarray, float, tuple[int, int], tuple[int, int, int, int]] | None:
+    def _frame(self, window: capture.Window, rect=None) -> tuple[np.ndarray, float, tuple[int, int], tuple[int, int, int, int]] | None:
+        """Canonical frame, when it was taken, the grabbed size and the phone screen inside it."""
         t = time.monotonic()
         raw = capture.grab(window)
         if raw is None:
             return None
-        rect = screen.screen_rect(raw)
+        rect = rect or screen.screen_rect(raw)
         canon = screen.normalize(raw, rect)
         return (canon, t, (raw.shape[1], raw.shape[0]), rect) if canon is not None else None
 
@@ -209,13 +225,15 @@ class Helper:
         while not self._stop.is_set():
             if mouse.moved():
                 return
-            got = self._frame(window)
+            # the phone screen does not move inside the window during a run
+            got = self._frame(window, rect)
             if got is None:
                 continue
             canon, t, size, rect = got
             video.write(canon)
-            times.write(f"{t:.4f}\n")
             move = brain.step(canon, t)
+            acted = move not in (None, "wait") and t >= busy
+            times.write(f"{t:.4f} {move if acted else ''}\n")
             if brain.view.over:
                 self._set(status="over", score=brain.best, best=max(self.state["best"], brain.best), runs=self.state["runs"] + 1)
                 return
@@ -223,7 +241,7 @@ class Helper:
             if lost > 15:
                 self._set(error="Lost sight of the character")
                 return
-            if move is None or move == "wait" or t < busy:
+            if not acted:
                 continue
             point = touch(TAP, size, rect)
             if move == "up":
