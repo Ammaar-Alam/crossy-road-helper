@@ -23,9 +23,16 @@ TAP = (332, 500)  # clear of the score, the pause button and the banners on the 
 PLAY = (332, 1325)  # the big play button after a splat
 SWIPE = 70  # screen points
 TITLE = 1.5  # seconds the title stays over the lanes after the first tap
+ARC = 0.3
 AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
 MODEL = ROOT / "models" / "detector.pt"
 COLORS = {V.GRASS: (60, 200, 90), V.ROAD: (120, 120, 120), V.WATER: (250, 200, 90), V.RAIL: (40, 60, 160), None: (0, 0, 255)}
+
+
+def lane_of(lane: float) -> int:
+    """The lane the character is in, from where its feet are seen."""
+    # it stands about a quarter of the way down its lane and a hop lifts it up to 0.4 lanes, so round from the middle
+    return int(np.floor(lane + ARC))
 
 
 def runs(mask: np.ndarray) -> list[list[int]]:
@@ -84,7 +91,7 @@ class Brain:
         spots = [(lane, col)]
         for _, move, _ in self.pending:
             dl, dc = bot.MOVES[move]
-            track = self.world.tracks.get(int(np.floor(lane)) + dl)
+            track = self.world.tracks.get(lane_of(lane) + dl)
             # a hop at a tree or rock bounces off, it must not pile up as a hop that never happens
             if track is not None and track.kind == V.GRASS and not bot.safe(track, col + dc, t, t):
                 continue
@@ -126,7 +133,7 @@ class Brain:
         for sent_at, move, (lane, col) in self.pending:
             if t - sent_at >= bot.LAG + bot.HOP + 0.25 and move != "wait":
                 dl, dc = bot.MOVES[move]
-                track = self.world.tracks.get(int(np.floor(lane)) + dl)
+                track = self.world.tracks.get(lane_of(lane) + dl)
                 if track is not None and track.kind == V.GRASS:
                     track.blocked.append(col + dc)
         self.pending = [p for p in self.pending if t - p[0] < bot.LAG + bot.HOP + 0.25]
@@ -154,11 +161,11 @@ class Brain:
             else:
                 break
         # the score only counts hops that showed up
-        seen_lane = int(np.floor(self.pos[0]))
+        seen_lane = lane_of(self.pos[0])
         self.start = seen_lane if self.start is None else self.start
         self.best = max(self.best, self.start - seen_lane)
         lane, c = self._expected(t)[-1]
-        lane = int(np.floor(lane))
+        lane = lane_of(lane)
         self.spot = lane, c
         return bot.plan(self.world, lane, c, t)
 
