@@ -27,18 +27,22 @@ COLORS = {V.GRASS: (60, 200, 90), V.ROAD: (120, 120, 120), V.WATER: (250, 200, 9
 
 
 def hide(view: V.View, x: float, y: float) -> None:
-    """Take the character out of the lanes it covers, it is neither an obstacle nor a missing log."""
+    """Mark where the character covers the lanes, it is neither an obstacle nor a missing log."""
     for lane in view.lanes:
         if lane.top > y or lane.top + V.LANE < y - 1.3 * V.LANE:
             continue
         c = round(V.column(x, lane.top + V.LANE / 2))
         span = slice(max(c - round(0.45 * V.TILE), 0), c + round(0.45 * V.TILE))
-        if lane.top + V.LANE > y:
+        if lane.top + V.LANE > y and lane.kind == V.WATER:
             # standing on water means standing on something
-            lane.solid[span] = 1 if lane.kind == V.WATER else 0
-        elif lane.kind in (V.ROAD, V.RAIL):
-            # its head pokes into the strip read for traffic, grass obstacles are found by their base instead
+            lane.solid[span] = 1
+        elif lane.top + V.LANE > y and lane.kind == V.GRASS:
             lane.solid[span] = 0
+        elif lane.kind in (V.ROAD, V.RAIL):
+            # its head pokes into the strip read for traffic above, what is behind it comes from earlier looks
+            # grass obstacles are found by their base instead
+            lane.hidden = np.zeros(len(lane.seen), bool)
+            lane.hidden[span] = lane.seen[span]
 
 
 class Brain:

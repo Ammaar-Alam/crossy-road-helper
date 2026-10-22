@@ -52,8 +52,21 @@ class Track:
         # a frame that read this lane as something else would describe the wrong things in it
         if self.kind is not None and lane.kind != self.kind:
             return
+        observed = lane.seen.copy()
+        if lane.hidden is not None:
+            observed &= ~lane.hidden
+            lane.seen = observed.copy()
+            if self.history:
+                # carry what was there before along at the lane's speed
+                behind = np.flatnonzero(lane.hidden)
+                t0, solid0, seen0 = self.history[-1]
+                src = behind - int(round(self.speed * (t - t0)))
+                ok = (src >= 0) & (src < len(solid0))
+                ok[ok] = seen0[src[ok]]
+                lane.solid[behind[ok]] = solid0[src[ok]]
+                lane.seen[behind[ok]] = True
         self.since = np.where((lane.solid > 0.5) & lane.seen, np.minimum(self.since, t), np.inf)
-        moving = lane.seen & (t - self.since < 0.5)
+        moving = observed & (t - self.since < 0.5)
         # with nothing moving in sight there is nothing to measure, only noise
         # with nothing moving in sight there is nothing to measure, only noise
         if self.kind in (ROAD, WATER) and (moving & (lane.solid > 0.5)).sum() >= 12:

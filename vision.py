@@ -41,6 +41,7 @@ class Lane:
     solid: np.ndarray  # per column, cars on roads, platforms on water, trees on grass, trains on rails
     seen: np.ndarray  # per column, whether the lane is on screen there
     signal: bool = False
+    hidden: np.ndarray | None = None  # per column, on screen but covered by the character
 
 
 @dataclass(slots=True)
