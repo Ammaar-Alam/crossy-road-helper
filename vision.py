@@ -30,6 +30,7 @@ GRASS, ROAD, WATER, RAIL = "grass", "road", "water", "rail"
 
 # where the character waits on the home screen, canonical px
 HOME = (335, 990)
+FEET = 18  # canonical px from the middle of the body down to the feet
 
 
 @dataclass(slots=True)
@@ -77,14 +78,15 @@ def masks(img: np.ndarray) -> dict[str, np.ndarray]:
     return {
         "valid": img.max(axis=2) > 0,
         "grass": (h >= 33) & (h <= 48) & (s > 100) & (v > 100),
-        "leafy": (h >= 25) & (h <= 55) & (s > 80),
+        # olive leaves, yellow taxis and green cars sit either side of it
+        "tree": (h >= 31) & (h <= 40) & (s > 130),
         "road": (h >= 104) & (h <= 125) & (s > 35) & (s < 95) & (v >= 60) & (v <= 140),
         "water": (h >= 88) & (h <= 104) & (s > 90) & (v > 190),
+        "foam": (s < 60) & (v > 200),
         "dark": (v < 58) & (v > 8),
         "log": red & (s > 90) & (s < 165) & (v > 70) & (v < 150),
-        "pad": (h >= 50) & (h <= 80) & (s > 100) & (v > 100),
         "trunk": ((h >= 150) | (h <= 5)) & (s > 40) & (s < 140) & (v > 35) & (v < 75),
-        "rock": (h >= 115) & (h <= 135) & (s > 50) & (s < 110) & (v > 150),
+        "rock": (h >= 115) & (h <= 140) & (s > 15) & (s < 110) & (v > 150),
         "glow": red & (s > 120) & (v > 220),
     }
 
@@ -109,14 +111,13 @@ def kind_of(m: dict[str, np.ndarray], y0: int, y1: int) -> str | None:
     if valid < 200:
         return None
     frac = {k: m[k][band].sum() / valid for k in ("grass", "road", "water")}
-    if frac["water"] > 0.25:
-        return WATER
     # the rail bed is road grey, the steel rails are what give it away by running the full width
     rails = m["rock"][band].sum(axis=1) / np.maximum(m["valid"][band].sum(axis=1), 1)
     if rails.max() > 0.5:
         return RAIL
-    best = max((GRASS, ROAD), key=frac.get)
-    return best if frac[best] > 0.35 else None
+    best = max((GRASS, ROAD, WATER), key=frac.get)
+    # logs can cover most of a river
+    return best if frac[best] > (0.25 if best == WATER else 0.35) else None
 
 
 def profile(hit: np.ndarray, valid: np.ndarray, y0: int, y1: int) -> tuple[np.ndarray, np.ndarray]:
@@ -162,12 +163,13 @@ def read(frame: np.ndarray) -> View:
         strip = int(top + 0.1 * LANE), int(top + 0.45 * LANE)
         signal = False
         if kind == ROAD:
-            # tree tops from the lane below and shadows never move, leave them out
-            solid, seen = profile(~(m["road"] | m["leafy"]), m["valid"], *strip)
+            # tree tops from the lane below never move, leave them out
+            solid, seen = profile(~(m["road"] | m["tree"]), m["valid"], *strip)
         elif kind == WATER:
-            solid, seen = profile(m["log"] | m["pad"], m["valid"], int(top + 0.3 * LANE), int(top + 0.7 * LANE))
+            # log tops are too patchy to find by color, anything in the river that is not water floats
+            solid, seen = profile(~(m["water"] | m["foam"]), m["valid"], int(top + 0.3 * LANE), int(top + 0.7 * LANE))
         elif kind == RAIL:
-            solid, seen = profile(~(m["dark"] | m["log"] | m["rock"] | m["road"]), m["valid"], *strip)
+            solid, seen = profile(~(m["dark"] | m["log"] | m["rock"] | m["road"] | m["tree"]), m["valid"], *strip)
             signal = bool(m["glow"][y0:y1].sum() > 40)
         else:
             _, seen = profile(m["grass"], m["valid"], y0, y1)
@@ -191,18 +193,20 @@ class Player:
         ratio = (mine / max(mine.sum(), 1)) / (every / every.sum() + 1e-4)
         self.model = np.clip(ratio / max(ratio.max(), 1e-9) * 1024, 0, 255).astype(np.float32)
 
-    def find(self, frame: np.ndarray, near: tuple[float, float] | None = None, reach: int = 90) -> tuple[float, float] | None:
-        """Canonical px of the character's feet, searched around near when given."""
-        x0, x1, y0, y1 = (120, 545, 560, 1200) if near is None else (
-            int(near[0]) - reach, int(near[0]) + reach, int(near[1]) - reach - 40, int(near[1]) + reach)
-        x0, y0 = max(x0, 0), max(y0, 0)
-        crop = frame[y0:y1, x0:x1]
+    def find(self, frame: np.ndarray, box: tuple[float, float, float, float] = (120, 545, 560, 1200)) -> tuple[float, float] | None:
+        """Canonical px of the character's feet, with its feet inside box (x0, x1, y0, y1)."""
+        pad = 40
+        x0, y0 = max(int(box[0]) - pad, 0), max(int(box[2]) - pad, 0)
+        crop = frame[y0 : int(box[3]) + pad, x0 : int(box[1]) + pad]
         if crop.size == 0:
             return None
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         score = cv2.blur(cv2.calcBackProject([hsv], [0, 1], self.model, [0, 180, 0, 256], 1).astype(np.float32), (21, 21))
+        # feet are a little below the middle of the body, only bodies with their feet in the box count
+        ys, xs = np.ogrid[: score.shape[0], : score.shape[1]]
+        inside = (xs + x0 >= box[0]) & (xs + x0 <= box[1]) & (ys + y0 + FEET >= box[2]) & (ys + y0 + FEET <= box[3])
+        score = np.where(inside, score, 0)
         if score.max() < 60:
             return None
         cy, cx = np.unravel_index(score.argmax(), score.shape)
-        # feet are a little below the middle of the body
-        return x0 + float(cx), y0 + float(cy) + 18
+        return x0 + float(cx), y0 + float(cy) + FEET

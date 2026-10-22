@@ -10,35 +10,13 @@ import vision as V
 from vision import GRASS, LANE, RAIL, ROAD, TILE, WATER
 
 HOP = 0.12  # seconds a hop takes
+STEP = 0.22  # seconds between our hops, a frame has to come in and be read before the next one
 LAG = 0.15  # seconds from the frame we read to our touch reaching the phone
 BODY = 0.35 * TILE  # half the character's width plus a margin
 STAY = 0.35  # how long the last spot of a plan must stay safe
 MAX_SPEED = 300  # px per second along a lane
-BASELINE = 0.2  # seconds between the two looks used to measure a lane's speed
+WINDOW = (0.1, 0.6)  # how far back, in seconds, frames are lined up to measure a lane's speed
 MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.0), "wait": (0, 0.0)}
-
-
-def shift_of(a: np.ndarray, sa: np.ndarray, b: np.ndarray, sb: np.ndarray, lo: int, hi: int) -> float | None:
-    """How far profile a moved to become b, searched over lo..hi px, None when there is nothing to line up."""
-    if sa.sum() < 2 or a[sa].std() < 0.1:
-        return None
-    scores = {}
-    for s in range(lo - 1, hi + 2):
-        a0, a1 = max(0, -s), min(len(a), len(a) - s)
-        both = sa[a0:a1] & sb[a0 + s : a1 + s]
-        if both.sum() >= 60:
-            scores[s] = np.abs(a[a0:a1][both] - b[a0 + s : a1 + s][both]).mean()
-    inside = {s: v for s, v in scores.items() if lo <= s <= hi}
-    if not inside:
-        return None
-    best = min(inside, key=inside.get)
-    if inside[best] > 0.25:
-        return None
-    left, right = scores.get(best - 1), scores.get(best + 1)
-    if left is None or right is None or left + right - 2 * inside[best] <= 0:
-        return float(best)
-    # vertex of the parabola through the three scores
-    return best + 0.5 * (left - right) / (left + right - 2 * inside[best])
 
 
 class Track:
@@ -47,9 +25,12 @@ class Track:
     def __init__(self):
         self.kinds: Counter[str] = Counter()
         self.history: deque[tuple[float, np.ndarray, np.ndarray]] = deque(maxlen=30)
-        self.rough: deque[float] = deque(maxlen=15)
-        self.speeds: deque[float] = deque(maxlen=15)
-        self.signal = False
+        self.speeds: deque[float] = deque(maxlen=20)
+        # columns we hopped at and bounced off, whatever was there was not seen
+        self.blocked: list[float] = []
+        self.signal_at = -1e9
+        # since when each column has been solid, things that never move are not traffic
+        self.since = np.full(V.COLUMNS, np.inf)
 
     @property
     def kind(self) -> str | None:
@@ -57,30 +38,57 @@ class Track:
 
     @property
     def speed(self) -> float:
-        if len(self.speeds) >= 3:
-            return float(np.median(self.speeds))
-        return float(np.median(self.rough)) if self.rough else 0.0
+        return float(np.median(self.speeds)) if self.speeds else 0.0
+
+    @property
+    def measured(self) -> bool:
+        return len(self.speeds) >= 3
 
     def add(self, lane: V.Lane, t: float) -> None:
         if lane.kind:
             self.kinds[lane.kind] += 1
-        if self.kind in (ROAD, WATER) and self.history:
-            # frame to frame shifts are too small to confuse one car for the next
-            t0, solid, seen = self.history[-1]
-            if 0 < t - t0 <= 0.1:
-                reach = int(np.ceil(MAX_SPEED * (t - t0)))
-                s = shift_of(solid, seen, lane.solid, lane.seen, -reach, reach)
-                if s is not None:
-                    self.rough.append(s / (t - t0))
-            # then a longer look near the rough guess for precision
-            old = next((h for h in self.history if t - h[0] <= 2 * BASELINE), None)
-            if len(self.rough) >= 3 and old is not None and t - old[0] >= BASELINE:
-                guess = float(np.median(self.rough)) * (t - old[0])
-                s = shift_of(old[1], old[2], lane.solid, lane.seen, int(guess) - 4, int(guess) + 4)
-                if s is not None:
-                    self.speeds.append(s / (t - old[0]))
+        if lane.signal:
+            self.signal_at = t
+        # a frame that read this lane as something else would describe the wrong things in it
+        if self.kind is not None and lane.kind != self.kind:
+            return
+        self.since = np.where((lane.solid > 0.5) & lane.seen, np.minimum(self.since, t), np.inf)
+        moving = lane.seen & (t - self.since < 0.5)
+        # with nothing moving in sight there is nothing to measure, only noise
+        # with nothing moving in sight there is nothing to measure, only noise
+        if self.kind in (ROAD, WATER) and (moving & (lane.solid > 0.5)).sum() >= 12:
+            v = self.fit(t, lane.solid, moving)
+            if v is not None:
+                self.speeds.append(v)
         self.history.append((t, lane.solid, lane.seen))
-        self.signal = lane.signal
+
+    def fit(self, t: float, solid: np.ndarray, moving: np.ndarray) -> float | None:
+        """Speed that best lines up the last half second of this lane with what it shows now."""
+        frames = [h for h in self.history if WINDOW[0] <= t - h[0] <= WINDOW[1]]
+        cols = np.flatnonzero(moving)
+        if len(frames) < 2 or len(cols) < 60:
+            return None
+        # once known, a lane's speed only needs a closer look since it never changes
+        guess = self.speed if self.measured else None
+        vs = np.arange(-MAX_SPEED, MAX_SPEED + 1, 4.0) if guess is None else np.arange(guess - 16, guess + 17, 1.0)
+        total, count = np.zeros(len(vs)), np.zeros(len(vs))
+        for t0, solid0, seen0 in frames:
+            idx = cols[None, :] - np.round(vs[:, None] * (t - t0)).astype(int)
+            ok = (idx >= 0) & (idx < len(solid0))
+            idx = np.clip(idx, 0, len(solid0) - 1)
+            ok &= seen0[idx]
+            total += (np.abs(solid0[idx] - solid[cols]) * ok).sum(axis=1)
+            count += ok.sum(axis=1)
+        score = np.where(count > 0.5 * len(cols) * len(frames), total / np.maximum(count, 1), np.inf)
+        i = int(np.argmin(score))
+        # a clear winner, not one of many equally poor guesses
+        if not np.isfinite(score[i]) or score[i] > 0.15 or score[i] > 0.6 * np.median(score[np.isfinite(score)]):
+            return None
+        if 0 < i < len(vs) - 1 and np.isfinite(score[i - 1]) and np.isfinite(score[i + 1]):
+            curve = score[i - 1] + score[i + 1] - 2 * score[i]
+            if curve > 0:
+                return float(vs[i] + 0.5 * (score[i - 1] - score[i + 1]) / curve * (vs[1] - vs[0]))
+        return float(vs[i])
 
     def at(self, t: float, lo: int, hi: int) -> np.ndarray:
         """Solid fraction of columns lo..hi expected at time t, off screen counts as solid on roads."""
@@ -94,8 +102,9 @@ class Track:
         return out
 
     def train(self) -> bool:
-        _, solid, seen = self.history[-1]
-        return self.signal or bool((solid[seen] > 0.5).mean() > 0.15)
+        t, solid, seen = self.history[-1]
+        # the warning light flashes, so it counts for a while after each flash
+        return t - self.signal_at < 1.0 or bool((solid[seen] > 0.5).mean() > 0.15)
 
 
 class World:
@@ -107,24 +116,34 @@ class World:
         self.tracks: dict[int, Track] = {}
 
     def update(self, view: V.View, t: float) -> None:
+        self.follow(view)
+        self.add(view, t)
+
+    def follow(self, view: V.View) -> None:
+        """Keep count of lanes the camera moved past."""
         if view.phase is None:
             return
         if self.phase is not None:
             d = view.phase - self.phase
             # lanes slide down as the camera moves on, when the grid wraps the same lane has a new row
-            if d < -LANE / 2:
-                self.scroll += 1
-            elif d > LANE / 2:
-                self.scroll -= 1
+            near = self.scroll + (1 if d < -LANE / 2 else -1 if d > LANE / 2 else 0)
+
+            def fit(scroll: int) -> int:
+                kinds = [(lane.kind, self.tracks.get(lane.row - scroll)) for lane in view.lanes if lane.kind]
+                return sum(1 if track.kind == kind else -1 for kind, track in kinds if track is not None and track.kind)
+
+            # a slow frame can move the grid over half a lane, the lane kinds tell which way it went
+            self.scroll = max((near, near + 1, near - 1), key=lambda s: (fit(s), s == near))
         self.phase = view.phase
+
+    def add(self, view: V.View, t: float) -> None:
+        if view.phase is None:
+            return
         ids = set()
         for lane in view.lanes:
             ids.add(lane.row - self.scroll)
             self.tracks.setdefault(lane.row - self.scroll, Track()).add(lane, t)
         self.tracks = {k: v for k, v in self.tracks.items() if k in ids}
-
-    def lane_of(self, y: float) -> int:
-        return int((y - self.phase) // LANE) - self.scroll
 
 
 def safe(track: Track | None, c: float, t0: float, t1: float) -> bool:
@@ -134,13 +153,21 @@ def safe(track: Track | None, c: float, t0: float, t1: float) -> bool:
     lo, hi = int(c - BODY), int(c + BODY) + 1
     if lo < 0 or hi > V.COLUMNS:
         return False
+    _, solid, seen = track.history[-1]
+    if not seen[lo:hi].all():
+        return False
     if track.kind == GRASS:
-        return track.history[-1][1][int(c - BODY / 2) : int(c + BODY / 2) + 1].max(initial=0) < 0.5
+        if any(abs(b - c) < TILE / 2 for b in track.blocked):
+            return False
+        return solid[int(c - BODY / 2) : int(c + BODY / 2) + 1].max(initial=0) < 0.5
     if track.kind == RAIL:
         return not track.train()
     if track.kind == WATER:
-        return track.at(t0, int(c) - 4, int(c) + 5).min() > 0.5
-    for t in np.arange(t0, t1 + 1e-6, 0.03):
+        return track.at(t0, int(c - BODY / 2), int(c + BODY / 2) + 1).min() > 0.5
+    if not track.measured and (solid[seen] > 0.5).any():
+        # cars whose speed is unknown could be anywhere soon
+        return False
+    for t in [*np.arange(t0, t1, 0.03), t1]:
         if track.at(t, lo, hi).max() > 0.5:
             return False
     return True
@@ -165,15 +192,16 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
         if left == 0:
             return
         for name, (dl, dc) in MOVES.items():
-            to, tc = at + dl, drift(at, c, HOP) + dc
+            to, tc = at + dl, drift(at, c, STEP) + dc
             here = world.tracks.get(at)
             there = world.tracks.get(to)
             if name == "wait":
-                if not safe(here, c, t, t + HOP) or (here and here.kind == RAIL):
+                if not safe(here, c, t, t + STEP) or (here and here.kind == RAIL):
                     continue
-            elif not (safe(here, c, t, t + HOP / 2) and safe(there, tc, t + HOP / 2, t + HOP + 0.05)):
+            # after landing we stay put until the next hop can go
+            elif not (safe(here, c, t, t + HOP / 2) and safe(there, tc, t + HOP / 2, t + STEP)):
                 continue
-            go(to, tc, t + HOP, left - 1, first or name, cost + (0 if name == "up" else 0.3 if name == "wait" else 1))
+            go(to, tc, t + STEP, left - 1, first or name, cost + (0 if name == "up" else 0.3 if name == "wait" else 1))
 
     go(lane, c, now + LAG, depth, None, 0)
     if best[0] > -1e9:

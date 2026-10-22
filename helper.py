@@ -22,6 +22,7 @@ ROOT = Path(__file__).parent
 TAP = (332, 500)  # clear of the score, the pause button and the banners on the splat screen
 PLAY = (332, 1325)  # the big play button after a splat
 SWIPE = 70  # screen points
+TITLE = 1.5  # seconds the title stays over the lanes after the first tap
 COLORS = {V.GRASS: (60, 200, 90), V.ROAD: (120, 120, 120), V.WATER: (250, 200, 90), V.RAIL: (40, 60, 160), None: (0, 0, 255)}
 
 
@@ -51,24 +52,88 @@ class Brain:
         self.best = 0
         self.view: V.View | None = None
         self.spot: tuple[int, float] | None = None
+        # where the character stands in the world, lanes from the world's first lane and columns, plus moves on the way
+        self.pos: tuple[float, float] | None = None
+        self.seen_at = 0.0
+        self.pending: list[tuple[float, str, tuple[float, float]]] = []
+        self.lost = 0
+
+    def sent(self, move: str, t: float) -> None:
+        if self.pos is not None:
+            self.pending.append((t, move, self.pos))
+
+    def _expected(self, t: float) -> list[tuple[float, float]]:
+        """Where the character could be now, from where it was seen and the moves still landing."""
+        lane, col = self.pos
+        track = self.world.tracks.get(int(lane))
+        if track is not None and track.kind == V.WATER:
+            col += track.speed * (t - self.seen_at)
+        spots = [(lane, col)]
+        for _, move, _ in self.pending:
+            dl, dc = bot.MOVES[move]
+            track = self.world.tracks.get(int(np.floor(lane)) + dl)
+            # a hop at a tree or rock bounces off, it must not pile up as a hop that never happens
+            if track is not None and track.kind == V.GRASS and not bot.safe(track, col + dc, t, t):
+                continue
+            lane, col = lane + dl, col + dc
+            spots.append((lane, col))
+        return spots
+
+    def _box(self, spots: list[tuple[float, float]]) -> tuple[float, float, float, float]:
+        pts = []
+        for lane, col in spots:
+            y = (lane + self.world.scroll) * V.LANE + self.world.phase
+            pts.append(V.to_canonical(col - V.LEAN * y, y))
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        # a hop arcs up and the camera keeps sliding down
+        return min(xs) - 35, max(xs) + 35, min(ys) - 45, max(ys) + 35
 
     def step(self, frame: np.ndarray, t: float) -> str | None:
         """Read a frame taken at time t and return a move, or None when the character is not in sight."""
         self.view = V.read(frame)
         if self.view.over or self.view.home:
             return None
-        self.near = self.player.find(frame, self.near) or self.player.find(frame)
+        if self.view.phase is None:
+            return None
+        self.world.follow(self.view)
+        # moves that should have landed long ago and never showed up did not happen, something was in the way
+        for sent_at, move, (lane, col) in self.pending:
+            if t - sent_at >= bot.LAG + bot.HOP + 0.25 and move != "wait":
+                dl, dc = bot.MOVES[move]
+                track = self.world.tracks.get(int(np.floor(lane)) + dl)
+                if track is not None and track.kind == V.GRASS:
+                    track.blocked.append(col + dc)
+        self.pending = [p for p in self.pending if t - p[0] < bot.LAG + bot.HOP + 0.25]
+        if self.pos is None or self.lost > 8:
+            self.near = self.player.find(frame)
+        else:
+            self.near = self.player.find(frame, self._box(self._expected(t)))
         if self.near is not None:
             hide(self.view, *V.to_sheared(*self.near))
-        self.world.update(self.view, t)
-        if self.world.phase is None or self.near is None:
+        self.world.add(self.view, t)
+        if self.near is None:
+            self.lost += 1
             self.spot = None
             return None
+        self.lost = 0
         x, y = V.to_sheared(*self.near)
-        lane, c = self.world.lane_of(y), V.column(x, y)
+        self.pos = ((y - self.world.phase) / V.LANE - self.world.scroll, V.column(x, y))
+        self.seen_at = t
+        # a move has landed once the character got at least half way
+        while self.pending:
+            _, move, (lane0, col0) = self.pending[0]
+            dl, dc = bot.MOVES[move]
+            if (dl and (self.pos[0] - lane0) * dl > 0.5) or (dc and (self.pos[1] - col0) * dc > 0.5 * V.TILE ** 2):
+                self.pending.pop(0)
+            else:
+                break
+        # the score only counts hops that showed up
+        seen_lane = int(np.floor(self.pos[0]))
+        self.start = seen_lane if self.start is None else self.start
+        self.best = max(self.best, self.start - seen_lane)
+        lane, c = self._expected(t)[-1]
+        lane = int(np.floor(lane))
         self.spot = lane, c
-        self.start = lane if self.start is None else self.start
-        self.best = max(self.best, self.start - lane)
         return bot.plan(self.world, lane, c, t)
 
     def draw(self, frame: np.ndarray, move: str | None) -> np.ndarray:
@@ -100,7 +165,8 @@ def replay(video: Path, out: Path, fps: float) -> None:
     cap = cv2.VideoCapture(str(video))
     # live runs keep their real frame times next to the video
     times = video.with_suffix(".txt")
-    stamps = [float(line.split()[0]) for line in times.read_text().splitlines()] if times.exists() else None
+    lines = [line.split() for line in times.read_text().splitlines()] if times.exists() else None
+    stamps = [float(p[0]) for p in lines] if lines else None
     step = 1 if stamps else max(1, round(cap.get(cv2.CAP_PROP_FPS) / fps))
     writer, brain, i, spent = None, None, 0, []
     while True:
@@ -121,6 +187,8 @@ def replay(video: Path, out: Path, fps: float) -> None:
         began = time.perf_counter()
         move = brain.step(canon, t)
         spent.append(time.perf_counter() - began)
+        if lines and len(lines[i - 1]) > 2 and lines[i - 1][2] == "1":
+            brain.sent(lines[i - 1][1], t)
         img = brain.draw(canon, move)
         if writer is None:
             writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps, (img.shape[1], img.shape[0]))
@@ -255,7 +323,8 @@ class Helper:
                 continue
             canon, t, size, rect = got
             move = brain.step(canon, t)
-            acted = move not in (None, "wait") and t >= busy
+            # the title covers the lanes ahead for the first moments, and lane speeds need a few looks anyway
+            acted = move not in (None, "wait") and t >= busy and t - began >= TITLE
             where = " ".join(f"{v:.0f}" for v in brain.near) if brain.near else ""
             recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}")
             if brain.view.over:
@@ -268,6 +337,7 @@ class Helper:
             if not acted:
                 continue
             point = touch(TAP, size, rect)
+            brain.sent(move, t)
             if move == "up":
                 mouse.tap(point)
             else:
