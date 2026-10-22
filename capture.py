@@ -124,14 +124,16 @@ class Mouse:
         self._post(Quartz.kCGEventLeftMouseUp, point)
         self.last = point, point
 
-    def swipe(self, point: tuple[float, float], dx: float, dy: float, steps: int = 4) -> None:
+    def swipe(self, point: tuple[float, float], dx: float, dy: float, steps: int = 8, gap: float = 0.012) -> None:
+        """A drag the phone sees as a swipe, too quick and it arrives as a tap, which hops forward."""
         import Quartz
 
         self._post(Quartz.kCGEventMouseMoved, point)
         self._post(Quartz.kCGEventLeftMouseDown, point)
         for i in range(1, steps + 1):
-            time.sleep(self.HOLD / 2)
+            time.sleep(gap)
             self._post(Quartz.kCGEventLeftMouseDragged, (point[0] + dx * i / steps, point[1] + dy * i / steps))
         end = (point[0] + dx, point[1] + dy)
+        time.sleep(gap)
         self._post(Quartz.kCGEventLeftMouseUp, end)
         self.last = point, end

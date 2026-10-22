@@ -7,6 +7,7 @@ import queue
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable
 
@@ -21,7 +22,7 @@ import vision as V
 ROOT = Path(__file__).parent
 TAP = (332, 500)  # clear of the score, the pause button and the banners on the splat screen
 PLAY = (332, 1325)  # the big play button after a splat
-SWIPE = 70  # screen points
+SWIPE = 90  # screen points
 TITLE = 1.5  # seconds the title stays over the lanes after the first tap
 ARC = 0.3
 AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
@@ -77,6 +78,7 @@ class Brain:
         self.seen_at = 0.0
         self.pending: list[tuple[float, str, tuple[float, float]]] = []
         self.lost = 0
+        self.lanes: deque[int] = deque(maxlen=3)
 
     def sent(self, move: str, t: float) -> None:
         if self.pos is not None:
@@ -160,10 +162,11 @@ class Brain:
                 self.pending.pop(0)
             else:
                 break
-        # the score only counts hops that showed up
-        seen_lane = lane_of(self.pos[0])
-        self.start = seen_lane if self.start is None else self.start
-        self.best = max(self.best, self.start - seen_lane)
+        # the score only counts lanes the character was seen in for a few frames, not a glimpse mid hop or after a hit
+        self.lanes.append(lane_of(self.pos[0]))
+        self.start = self.lanes[0] if self.start is None else self.start
+        if len(self.lanes) == self.lanes.maxlen:
+            self.best = max(self.best, self.start - max(self.lanes))
         lane, c = self._expected(t)[-1]
         lane = lane_of(lane)
         self.spot = lane, c
@@ -332,6 +335,69 @@ class Helper:
         canon = screen.normalize(raw, rect)
         return (canon, t, (raw.shape[1], raw.shape[0]), rect) if canon is not None else None
 
+    def _home(self, window, mouse, touch) -> tuple[np.ndarray, tuple[int, int], tuple[int, int, int, int]] | None:
+        """Get to the home screen, through the play button after a splat."""
+        deadline = time.monotonic() + 8
+        while not self._stop.is_set():
+            got = self._frame(window)
+            if got is None:
+                self._set(status="no phone")
+                return None
+            canon, _, size, rect = got
+            view = V.read(canon)
+            if view.home:
+                return canon, size, rect
+            if view.over:
+                mouse.tap(touch(PLAY, size, rect))
+                time.sleep(1.0)
+            elif time.monotonic() > deadline:
+                self._set(error="Start from the home screen")
+                return None
+            time.sleep(0.1)
+        return None
+
+    def swipes(self) -> None:
+        """Start a run and try a few swipe speeds on the starting grass, then say what each one did."""
+        window = capture.place_window()
+        if window is None:
+            print("Open iPhone Mirroring")
+            return
+        mouse = capture.Mouse()
+
+        def touch(point: tuple[float, float], size, rect) -> tuple[float, float]:
+            return capture.to_point(window, size, rect, *point)
+
+        got = self._home(window, mouse, touch)
+        if got is None:
+            print(self.state["error"] or "Could not reach the home screen")
+            return
+        canon, size, rect = got
+        brain = Brain(canon, V.Detector(str(MODEL)) if MODEL.exists() else None)
+
+        def watch(secs: float):
+            end = time.monotonic() + secs
+            while time.monotonic() < end:
+                frame = self._frame(window, rect)
+                if frame is not None:
+                    brain.step(frame[0], frame[1])
+            return brain.pos
+
+        mouse.tap(touch(TAP, size, rect))
+        watch(TITLE)
+        for steps, gap, dist in ((4, 0.010, 70), (8, 0.012, 90), (12, 0.016, 110)):
+            outcomes = []
+            for move in ("left", "right", "left", "right"):
+                before = brain.pos
+                mouse.swipe(touch(TAP, size, rect), -dist if move == "left" else dist, 0, steps, gap)
+                after = watch(0.7)
+                if before is None or after is None or brain.view.over:
+                    outcomes.append("lost")
+                    continue
+                dl, dc = after[0] - before[0], after[1] - before[1]
+                outcomes.append("up" if dl < -0.6 else "down" if dl > 0.6 else "left" if dc < -25 else "right" if dc > 25 else "nothing")
+            hits = sum(o == m for o, m in zip(outcomes, ("left", "right", "left", "right")))
+            print(f"{steps} steps, {gap * 1000:.0f} ms apart, {dist} points: {hits}/4 right  ({', '.join(outcomes)})")
+
     def _play(self) -> None:
         window = capture.place_window()
         if window is None:
@@ -342,26 +408,10 @@ class Helper:
         def touch(point: tuple[float, float], size, rect) -> tuple[float, float]:
             return capture.to_point(window, size, rect, *point)
 
-        # get to the home screen, through the play button after a splat
-        deadline = time.monotonic() + 8
-        while not self._stop.is_set():
-            got = self._frame(window)
-            if got is None:
-                self._set(status="no phone")
-                return
-            canon, _, size, rect = got
-            view = V.read(canon)
-            if view.home:
-                break
-            if view.over:
-                mouse.tap(touch(PLAY, size, rect))
-                time.sleep(1.0)
-            elif time.monotonic() > deadline:
-                self._set(error="Start from the home screen")
-                return
-            time.sleep(0.1)
-        if self._stop.is_set():
+        got = self._home(window, mouse, touch)
+        if got is None:
             return
+        canon, size, rect = got
 
         if self._detector is None and MODEL.exists():
             self._detector = V.Detector(str(MODEL))
@@ -398,7 +448,8 @@ class Helper:
             canon, t, size, rect = got
             move = brain.step(canon, t)
             # the title covers the lanes ahead for the first moments, and lane speeds need a few looks anyway
-            acted = move not in (None, "wait") and t >= busy and t - began >= TITLE
+            # one move at a time, the next is planned from where the last one was seen to land
+            acted = move not in (None, "wait") and t >= busy and t - began >= TITLE and not brain.pending
             if recorder is not None:
                 where = " ".join(f"{v:.0f}" for v in brain.near) if brain.near else ""
                 recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}")
@@ -435,6 +486,7 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("ui", help="open the panel (default)")
     sub.add_parser("play", help="play one run without the panel")
+    sub.add_parser("swipes", help="try a few swipe speeds on the starting grass and report which the phone takes")
     r = sub.add_parser("replay", help="run a recording through the helper and save what it saw")
     r.add_argument("video", type=Path)
     r.add_argument("--out", type=Path)
@@ -442,6 +494,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "replay":
         replay(args.video, args.out or args.video.with_name(args.video.stem + "_seen.mp4"), args.fps)
+    elif args.command == "swipes":
+        Helper().swipes()
     elif args.command == "play":
         said = []
 
