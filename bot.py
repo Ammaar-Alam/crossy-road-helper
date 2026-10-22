@@ -81,26 +81,36 @@ class Track:
         cols = np.flatnonzero(moving)
         if len(frames) < 2 or len(cols) < 60:
             return None
-        # once known, a lane's speed only needs a closer look since it never changes
-        guess = self.speed if self.measured else None
-        vs = np.arange(-MAX_SPEED, MAX_SPEED + 1, 4.0) if guess is None else np.arange(guess - 16, guess + 17, 1.0)
-        total, count = np.zeros(len(vs)), np.zeros(len(vs))
-        for t0, solid0, seen0 in frames:
-            idx = cols[None, :] - np.round(vs[:, None] * (t - t0)).astype(int)
-            ok = (idx >= 0) & (idx < len(solid0))
-            idx = np.clip(idx, 0, len(solid0) - 1)
-            ok &= seen0[idx]
-            total += (np.abs(solid0[idx] - solid[cols]) * ok).sum(axis=1)
-            count += ok.sum(axis=1)
-        score = np.where(count > 0.5 * len(cols) * len(frames), total / np.maximum(count, 1), np.inf)
-        i = int(np.argmin(score))
+        frames = frames[:: max(1, len(frames) // 4)]
+
+        def scores(vs: np.ndarray) -> np.ndarray:
+            total, count = np.zeros(len(vs)), np.zeros(len(vs))
+            for t0, solid0, seen0 in frames:
+                idx = cols[None, :] - np.round(vs[:, None] * (t - t0)).astype(int)
+                ok = (idx >= 0) & (idx < len(solid0))
+                idx = np.clip(idx, 0, len(solid0) - 1)
+                ok &= seen0[idx]
+                total += (np.abs(solid0[idx] - solid[cols]) * ok).sum(axis=1)
+                count += ok.sum(axis=1)
+            return np.where(count > 0.5 * len(cols) * len(frames), total / np.maximum(count, 1), np.inf)
+
+        # every look searches every speed, a wrong early guess must never stick
+        coarse = np.arange(-MAX_SPEED, MAX_SPEED + 1, 6.0)
+        rough = scores(coarse)
+        i = int(np.argmin(rough))
+        finite = rough[np.isfinite(rough)]
         # a clear winner, not one of many equally poor guesses
-        if not np.isfinite(score[i]) or score[i] > 0.15 or score[i] > 0.6 * np.median(score[np.isfinite(score)]):
+        if not np.isfinite(rough[i]) or rough[i] > 0.6 * np.median(finite):
+            return None
+        vs = np.arange(coarse[i] - 6, coarse[i] + 7, 1.0)
+        score = scores(vs)
+        i = int(np.argmin(score))
+        if not np.isfinite(score[i]) or score[i] > 0.15:
             return None
         if 0 < i < len(vs) - 1 and np.isfinite(score[i - 1]) and np.isfinite(score[i + 1]):
             curve = score[i - 1] + score[i + 1] - 2 * score[i]
             if curve > 0:
-                return float(vs[i] + 0.5 * (score[i - 1] - score[i + 1]) / curve * (vs[1] - vs[0]))
+                return float(vs[i] + 0.5 * (score[i - 1] - score[i + 1]) / curve)
         return float(vs[i])
 
     def at(self, t: float, lo: int, hi: int) -> np.ndarray:
