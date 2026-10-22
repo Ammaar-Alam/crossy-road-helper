@@ -7,10 +7,10 @@ name = "crossy-road-helper"
 version = "0.1.0"
 description = "Plays Crossy Road through iPhone Mirroring"
 requires-python = ">=3.11"
-dependencies = ["numpy>=2.0", "opencv-python>=4.10", "pyobjc-framework-Quartz>=10.0", "pyobjc-framework-Cocoa>=10.0", "pywebview>=5.0"]
+dependencies = ["numpy>=2.0", "opencv-python>=4.10", "pyobjc-framework-Quartz>=10.0", "pyobjc-framework-Cocoa>=10.0", "pywebview>=5.0", "torch>=2.4", "ultralytics>=8.3", "google-genai>=1.0"]
 
 [project.scripts]
 crossy-helper = "helper:main"
 
 [tool.setuptools]
-py-modules = ["screen", "vision", "bot", "capture", "helper", "panel"]
+py-modules = ["screen", "vision", "bot", "capture", "helper", "panel", "label"]

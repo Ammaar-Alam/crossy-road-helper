@@ -23,7 +23,15 @@ TAP = (332, 500)  # clear of the score, the pause button and the banners on the 
 PLAY = (332, 1325)  # the big play button after a splat
 SWIPE = 70  # screen points
 TITLE = 1.5  # seconds the title stays over the lanes after the first tap
+AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
+MODEL = ROOT / "models" / "detector.pt"
 COLORS = {V.GRASS: (60, 200, 90), V.ROAD: (120, 120, 120), V.WATER: (250, 200, 90), V.RAIL: (40, 60, 160), None: (0, 0, 255)}
+
+
+def runs(mask: np.ndarray) -> list[list[int]]:
+    """Start and end of each stretch of True."""
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], mask.astype(np.int8), [0]])))
+    return edges.reshape(-1, 2).tolist()
 
 
 def hide(view: V.View, x: float, y: float) -> None:
@@ -48,8 +56,9 @@ def hide(view: V.View, x: float, y: float) -> None:
 class Brain:
     """Everything between a canonical frame and the next move, shared by live play and replays."""
 
-    def __init__(self, home_frame: np.ndarray):
+    def __init__(self, home_frame: np.ndarray, detector: V.Detector | None = None):
         self.player = V.Player(home_frame)
+        self.detector = detector
         self.world = bot.World()
         self.near: tuple[float, float] | None = None
         self.start: int | None = None
@@ -92,9 +101,22 @@ class Brain:
         # a hop arcs up and the camera keeps sliding down
         return min(xs) - 35, max(xs) + 35, min(ys) - 45, max(ys) + 35
 
+    @staticmethod
+    def _spot(boxes, box) -> tuple[float, float] | None:
+        """Feet of the detected character, the one inside box when given."""
+        for name, *corners in boxes or []:
+            if name != "character":
+                continue
+            y, c0, c1 = V.footprint(*corners)
+            x, y = V.to_canonical((c0 + c1) / 2 - V.LEAN * y, y)
+            if box is None or (box[0] <= x <= box[1] and box[2] <= y <= box[3]):
+                return x, y
+        return None
+
     def step(self, frame: np.ndarray, t: float) -> str | None:
         """Read a frame taken at time t and return a move, or None when the character is not in sight."""
-        self.view = V.read(frame)
+        boxes = self.detector(frame) if self.detector is not None else None
+        self.view = V.read(frame, boxes)
         if self.view.over or self.view.home:
             return None
         if self.view.phase is None:
@@ -108,10 +130,10 @@ class Brain:
                 if track is not None and track.kind == V.GRASS:
                     track.blocked.append(col + dc)
         self.pending = [p for p in self.pending if t - p[0] < bot.LAG + bot.HOP + 0.25]
-        if self.pos is None or self.lost > 8:
-            self.near = self.player.find(frame)
-        else:
-            self.near = self.player.find(frame, self._box(self._expected(t)))
+        box = None if self.pos is None or self.lost > 8 else self._box(self._expected(t))
+        self.near = self._spot(boxes, box)
+        if self.near is None:
+            self.near = self.player.find(frame) if box is None else self.player.find(frame, box)
         if self.near is not None:
             hide(self.view, *V.to_sheared(*self.near))
         self.world.add(self.view, t)
@@ -139,6 +161,29 @@ class Brain:
         lane = int(np.floor(lane))
         self.spot = lane, c
         return bot.plan(self.world, lane, c, t)
+
+    def snapshot(self, move: str | None) -> dict | None:
+        """The lanes around the character as the panel draws them, columns relative to the character."""
+        if self.spot is None:
+            return None
+        lane, c = self.spot
+        lanes = []
+        for d in range(-AHEAD, BEHIND + 1):
+            track = self.world.tracks.get(lane + d)
+            if track is None or track.kind is None or not track.history:
+                lanes.append(None)
+                continue
+            _, solid, seen = track.history[-1]
+            lo = int(c) - SPAN
+            idx = np.arange(lo, lo + 2 * SPAN)
+            ok = (idx >= 0) & (idx < len(solid))
+            full = np.zeros(len(idx), bool)
+            full[ok] = solid[idx[ok]] > 0.5
+            unseen = np.ones(len(idx), bool)
+            unseen[ok] = ~seen[idx[ok]]
+            lanes.append({"kind": track.kind, "speed": round(track.speed), "things": runs(full), "unseen": runs(unseen),
+                          "blocked": [round(b - lo) for b in track.blocked if 0 <= b - lo < 2 * SPAN]})
+        return {"lanes": lanes, "span": 2 * SPAN, "tile": V.TILE, "move": move}
 
     def draw(self, frame: np.ndarray, move: str | None) -> np.ndarray:
         img = V.shear(frame)
@@ -173,6 +218,7 @@ def replay(video: Path, out: Path, fps: float) -> None:
     stamps = [float(p[0]) for p in lines] if lines else None
     step = 1 if stamps else max(1, round(cap.get(cv2.CAP_PROP_FPS) / fps))
     writer, brain, i, spent = None, None, 0, []
+    detector = V.Detector(str(MODEL)) if MODEL.exists() else None
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -186,7 +232,7 @@ def replay(video: Path, out: Path, fps: float) -> None:
         t = stamps[i - 1] if stamps else i / cap.get(cv2.CAP_PROP_FPS)
         if brain is None or V.read(canon).home:
             if V.read(canon).home:
-                brain = Brain(canon)
+                brain = Brain(canon, detector)
             continue
         began = time.perf_counter()
         move = brain.step(canon, t)
@@ -235,9 +281,11 @@ class Helper:
 
     def __init__(self, on_state: Callable[[dict], None] = print):
         self.on_state = on_state
-        self.state = {"running": False, "status": "idle", "score": None, "best": 0, "runs": 0, "rate": None, "error": None}
+        self.state = {"running": False, "status": "idle", "score": None, "best": 0, "runs": 0, "rate": None, "error": None,
+                      "fps": None, "view": None, "record": True, "history": [], "eyes": "model" if MODEL.exists() else "colors"}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._detector: V.Detector | None = None
 
     def _set(self, **changes) -> None:
         self.state.update(changes)
@@ -253,8 +301,12 @@ class Helper:
     def stop(self) -> None:
         self._stop.set()
 
+    def record(self, on: bool) -> None:
+        """Whether runs are saved, they are what the detector learns from."""
+        self._set(record=bool(on))
+
     def _run(self) -> None:
-        self._set(running=True, status="starting", error=None, score=None, rate=None)
+        self._set(running=True, status="starting", error=None, score=None, rate=None, fps=None, view=None)
         try:
             self._play()
         except Exception as error:  # the panel should say what broke instead of freezing
@@ -304,23 +356,34 @@ class Helper:
         if self._stop.is_set():
             return
 
-        brain = Brain(canon)
-        (ROOT / "captures" / "live").mkdir(parents=True, exist_ok=True)
-        recorder = Recorder(ROOT / "captures" / "live" / time.strftime("%Y%m%d-%H%M%S"))
-        # the home frame goes first so a replay can learn the character from it
-        recorder.add(canon, f"{time.monotonic():.4f} - 0")
+        if self._detector is None and MODEL.exists():
+            self._detector = V.Detector(str(MODEL))
+        brain = Brain(canon, self._detector)
+        recorder = None
+        if self.state["record"]:
+            (ROOT / "captures" / "live").mkdir(parents=True, exist_ok=True)
+            recorder = Recorder(ROOT / "captures" / "live" / time.strftime("%Y%m%d-%H%M%S"))
+            # the home frame goes first so a replay can learn the character from it
+            recorder.add(canon, f"{time.monotonic():.4f} - 0")
+        began = time.monotonic()
+        end = "stopped"
         try:
-            self._run_one(window, mouse, touch, brain, size, rect, recorder)
+            end = self._run_one(window, mouse, touch, brain, size, rect, recorder)
         finally:
-            recorder.close()
+            if recorder is not None:
+                recorder.close()
+            run = {"score": brain.best, "secs": round(time.monotonic() - began), "end": end}
+            self._set(history=[run, *self.state["history"]][:8])
 
-    def _run_one(self, window, mouse, touch, brain, size, rect, recorder) -> None:
+    def _run_one(self, window, mouse, touch, brain, size, rect, recorder) -> str:
+        """Play until the run ends, and say how it ended."""
         mouse.tap(touch(TAP, size, rect))
         began, busy, lost = time.monotonic(), time.monotonic() + bot.HOP, 0
+        last, shown, fps = None, 0.0, None
         self._set(status="playing", score=0)
         while not self._stop.is_set():
             if mouse.moved():
-                return
+                return "stopped"
             # the phone screen does not move inside the window during a run
             got = self._frame(window, rect)
             if got is None:
@@ -329,15 +392,22 @@ class Helper:
             move = brain.step(canon, t)
             # the title covers the lanes ahead for the first moments, and lane speeds need a few looks anyway
             acted = move not in (None, "wait") and t >= busy and t - began >= TITLE
-            where = " ".join(f"{v:.0f}" for v in brain.near) if brain.near else ""
-            recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}")
+            if recorder is not None:
+                where = " ".join(f"{v:.0f}" for v in brain.near) if brain.near else ""
+                recorder.add(canon, f"{t:.4f} {move or '-'} {int(acted)} {where}")
+            fps = None if last is None else 1 / max(t - last, 1e-3) if fps is None else 0.9 * fps + 0.1 / max(t - last, 1e-3)
+            last = t
             if brain.view.over:
                 self._set(status="over", score=brain.best, best=max(self.state["best"], brain.best), runs=self.state["runs"] + 1)
-                return
+                return "splat"
             lost = 0 if brain.near is not None else lost + 1
             if lost > 15:
                 self._set(error="Lost sight of the character")
-                return
+                return "lost"
+            # the panel redraws about ten times a second, more would only cost the loop time
+            if t - shown >= 0.1:
+                shown = t
+                self._set(view=brain.snapshot(move), fps=fps, score=brain.best)
             if not acted:
                 continue
             point = touch(TAP, size, rect)
@@ -350,6 +420,7 @@ class Helper:
             busy = time.monotonic() + bot.HOP
             elapsed = time.monotonic() - began
             self._set(score=brain.best, rate=brain.best / elapsed if elapsed > 1 else None)
+        return "stopped"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -365,7 +436,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "replay":
         replay(args.video, args.out or args.video.with_name(args.video.stem + "_seen.mp4"), args.fps)
     elif args.command == "play":
-        helper = Helper(lambda s: print(s["status"], s["score"], s["error"] or ""))
+        said = []
+
+        def say(s: dict) -> None:
+            # the panel gets ten updates a second, the terminal only needs the changes
+            line = f"{s['status']} {s['score']} {s['error'] or ''}"
+            if not said or said[-1] != line.split()[0] + (s["error"] or ""):
+                said.append(line.split()[0] + (s["error"] or ""))
+                print(line)
+
+        helper = Helper(say)
         helper.start()
         helper._thread.join()
     else:

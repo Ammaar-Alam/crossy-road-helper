@@ -23,6 +23,9 @@ class Panel:
     def stop(self):
         self._helper.stop()
 
+    def record(self, on):
+        self._helper.record(on)
+
     def _render(self, state: dict) -> None:
         if self._window is not None:
             self._window.evaluate_js(f"render({json.dumps(state)})")

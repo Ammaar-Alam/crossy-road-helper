@@ -47,6 +47,17 @@ class Screens(unittest.TestCase):
         self.assertEqual("".join(LETTER[l.kind] for l in self.read("rails").lanes), "g??grrgrTgrrrwwTggggggg")
 
 
+class Boxes(unittest.TestCase):
+    def test_footprint_of_a_box(self):
+        # a car 50 px long whose front edge sits at sheared y 500 starting at column 300
+        front, left, length = 500.0, 300.0 - V.LEAN * 500, 50.0
+        x1, y1 = V.to_canonical(left + length, front)
+        y, c0, c1 = V.footprint(left / V.SCALE, y1 - 120, x1 + V.LEAN * V.DEPTH / V.SCALE, y1)
+        self.assertAlmostEqual(c0, 300, delta=0.5)
+        self.assertAlmostEqual(c1, 350, delta=0.5)
+        self.assertAlmostEqual(y, front - V.DEPTH / 2, delta=0.5)
+
+
 class Plans(unittest.TestCase):
     def test_hops_onto_an_empty_road(self):
         w = world({0: (V.ROAD, 100, None), 1: (V.GRASS, 0, None)})

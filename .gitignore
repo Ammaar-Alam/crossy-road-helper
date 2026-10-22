@@ -8,3 +8,5 @@ captures/
 graphify-out/
 .claude/
 .impeccable.md
+.yolo/
+.playwright-mcp/

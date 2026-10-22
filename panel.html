@@ -10,13 +10,12 @@
   :root {
     --asphalt: oklch(0.27 0.012 265);
     --asphalt-deep: oklch(0.22 0.012 265);
+    --asphalt-lift: oklch(0.32 0.012 265);
     --dash: oklch(0.46 0.012 265);
     --outline: oklch(0.17 0.012 265);
     --grass: oklch(0.83 0.17 128);
-    --grass-alt: oklch(0.79 0.175 131);
-    --grass-side: oklch(0.6 0.14 134);
-    --snow: oklch(0.98 0.004 250);
-    --muted: oklch(0.72 0.012 265);
+    --snow: oklch(0.97 0.005 250);
+    --muted: oklch(0.7 0.012 265);
     --coin: oklch(0.88 0.17 96);
     --go: oklch(0.79 0.16 66);
     --go-top: oklch(0.86 0.13 72);
@@ -34,220 +33,299 @@
     --space-md: 12px;
     --space-lg: 16px;
     --space-xl: 24px;
-    --space-2xl: 32px;
 
-    --outlined: 3px 0 var(--outline), -3px 0 var(--outline), 0 3px var(--outline), 0 -3px var(--outline),
-      3px 3px var(--outline), -3px 3px var(--outline), 3px -3px var(--outline), -3px -3px var(--outline),
-      0 6px var(--outline), 3px 6px var(--outline), -3px 6px var(--outline);
-    --outlined-sm: 2px 0 var(--outline), -2px 0 var(--outline), 0 2px var(--outline), 0 -2px var(--outline),
+    --outlined: 2px 0 var(--outline), -2px 0 var(--outline), 0 2px var(--outline), 0 -2px var(--outline),
       2px 2px var(--outline), -2px 2px var(--outline), 2px -2px var(--outline), -2px -2px var(--outline), 0 4px var(--outline);
     --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  * { box-sizing: border-box; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
 
   html, body {
     height: 100%;
     background: var(--asphalt);
     color: var(--snow);
-    font: 500 15px/1.45 var(--body);
+    font: 500 14px/1.45 var(--body);
     -webkit-font-smoothing: antialiased;
     user-select: none;
     cursor: default;
     overflow: hidden;
   }
 
-  .panel { height: 100%; display: flex; flex-direction: column; }
+  .panel { height: 100%; display: flex; flex-direction: column; padding: var(--space-md) var(--space-lg) var(--space-lg); gap: var(--space-md); }
 
-  /* grass lanes, the block's front face is the darker strip along the bottom */
-  .field {
-    flex: none;
-    height: 380px;
-    position: relative;
-    padding: var(--space-xl) var(--space-lg) 0;
-    background: repeating-linear-gradient(180deg, var(--grass) 0 64px, var(--grass-alt) 64px 128px);
-    box-shadow: inset 0 -14px var(--grass-side), 0 8px var(--asphalt-deep);
-  }
+  /* status and score share one row, the map gets the room */
+  .head { display: flex; align-items: center; gap: var(--space-md); min-height: 40px; }
+  .status { flex: 1; font: 700 18px/1.1 var(--pixel); text-shadow: var(--outlined); letter-spacing: 0.02em; }
+  .status[data-tone="go"] { color: var(--grass); }
+  .status[data-tone="halt"] { color: var(--halt-top); }
+  .score { font: 700 32px/1 var(--pixel); font-variant-numeric: tabular-nums; text-shadow: var(--outlined); }
+  .best { display: flex; flex-direction: column; align-items: flex-end; font: 400 10px/1.2 var(--pixel); color: var(--muted); }
+  .best strong { font: 700 16px/1.1 var(--pixel); color: var(--coin); text-shadow: var(--outlined); font-variant-numeric: tabular-nums; }
 
-  .score {
-    font: 700 128px/1 var(--pixel);
-    font-variant-numeric: tabular-nums;
-    text-shadow: var(--outlined);
-    white-space: nowrap;
-  }
-  /* shrink so a long run still fits the lane */
-  .score[data-len="3"] { font-size: 104px; }
-  .score[data-len="4"] { font-size: 80px; }
-  .top {
-    margin-top: var(--space-md);
-    color: var(--coin);
-    font: 700 24px/1 var(--pixel);
-    font-variant-numeric: tabular-nums;
-    text-shadow: var(--outlined-sm);
-  }
+  .problem { padding: var(--space-sm) var(--space-md); background: var(--banner); font-weight: 700; line-height: 1.35; box-shadow: 0 0 0 2px var(--outline); }
 
-  .ground {
-    position: absolute;
-    left: var(--space-lg);
-    right: var(--space-lg);
-    bottom: 14px;
-    display: flex;
-    align-items: flex-end;
-    pointer-events: none;
-  }
-  .chicken { width: 50px; height: 60px; transform-origin: 50% 100%; transition: transform 220ms var(--ease); }
-  .over .chicken { transform: scale(1.35, 0.3); }
-  .trees { margin-left: auto; display: flex; align-items: flex-end; gap: var(--space-xs); }
-  .tree { width: 40px; height: 60px; }
-  .tree.short { width: 32px; height: 40px; }
-  svg { display: block; shape-rendering: crispEdges; }
+  /* the lane map sits in a block with a darker front face, like a slice of the world */
+  .map { position: relative; box-shadow: 0 0 0 2px var(--outline), 0 6px 0 2px var(--asphalt-deep); }
+  .map canvas { display: block; width: 100%; image-rendering: pixelated; }
 
-  .road { flex: 1; display: flex; flex-direction: column; padding: var(--space-xl) var(--space-lg) var(--space-lg); }
+  .readouts { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-sm); padding-top: var(--space-xs); }
+  .readout span { display: block; color: var(--muted); font: 400 10px/1.2 var(--pixel); letter-spacing: 0.04em; }
+  .readout strong { display: block; margin-top: 2px; font: 700 18px/1.1 var(--pixel); font-variant-numeric: tabular-nums; text-shadow: var(--outlined); white-space: nowrap; }
 
-  .status {
-    min-height: 54px;
-    font: 700 24px/1.15 var(--pixel);
-    text-shadow: var(--outlined-sm);
-    text-wrap: balance;
+  /* dashed lane marking above the run list */
+  .runs {
+    flex: 1; min-height: 0; overflow: hidden;
+    padding-top: var(--space-md);
+    background: repeating-linear-gradient(90deg, var(--dash) 0 22px, transparent 22px 38px) top / 100% 3px no-repeat;
   }
+  .runs h2 { font: 400 10px/1.2 var(--pixel); color: var(--muted); letter-spacing: 0.04em; margin-bottom: var(--space-xs); }
+  .runs ol { list-style: none; display: grid; gap: 2px; }
+  .runs li { display: grid; grid-template-columns: 52px 48px 1fr; align-items: baseline; padding: 3px var(--space-sm); background: var(--asphalt-lift); }
+  .runs li:nth-child(even) { background: color-mix(in oklch, var(--asphalt-lift) 60%, var(--asphalt)); }
+  .runs b { font: 700 15px/1.2 var(--pixel); font-variant-numeric: tabular-nums; }
+  .runs li.top b { color: var(--coin); }
+  .runs time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .runs em { font-style: normal; color: var(--muted); text-align: right; }
+  .runs .none { color: var(--muted); padding: var(--space-xs) 0; }
 
-  /* lane marking between what's happening and the tallies */
-  .stats {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-lg);
-    margin-top: var(--space-lg);
-    padding-top: var(--space-lg);
-    background: repeating-linear-gradient(90deg, var(--dash) 0 28px, transparent 28px 48px) top / 100% 4px no-repeat;
-  }
-  .stat span { display: block; color: var(--muted); font: 400 12px/1.2 var(--pixel); letter-spacing: 0.04em; }
-  .stat strong {
-    display: block;
-    margin-top: var(--space-xs);
-    font: 700 32px/1.1 var(--pixel);
-    font-variant-numeric: tabular-nums;
-    text-shadow: var(--outlined-sm);
-    white-space: nowrap;
-  }
+  .controls { display: grid; grid-template-columns: 88px 1fr; gap: var(--space-md); }
 
-  .problem {
-    margin: var(--space-xl) calc(-1 * var(--space-lg));
-    padding: var(--space-md) var(--space-lg);
-    background: var(--banner);
-    font-weight: 700;
-    line-height: 1.35;
-  }
+  button { border: 0; color: var(--snow); font: 700 22px/1 var(--pixel); text-shadow: var(--outlined); cursor: pointer; transition: transform 90ms var(--ease), box-shadow 90ms var(--ease); }
+  button:focus-visible { outline: 3px solid var(--coin); outline-offset: 3px; }
 
-  /* chunky block button sitting on its lip */
-  .go {
-    width: 100%;
-    margin-top: auto;
-    height: 64px;
-    border: 0;
-    background: var(--go);
-    color: var(--snow);
-    font: 700 28px/1 var(--pixel);
-    text-shadow: var(--outlined-sm);
-    cursor: pointer;
-    box-shadow: inset 0 4px var(--go-top), inset 0 -10px var(--go-lip), 0 0 0 3px var(--outline);
-    transition: transform 90ms var(--ease), box-shadow 90ms var(--ease);
-  }
-  .go.stop { background: var(--halt); box-shadow: inset 0 4px var(--halt-top), inset 0 -10px var(--halt-lip), 0 0 0 3px var(--outline); }
-  .go:active { transform: translateY(4px); box-shadow: inset 0 4px var(--go-top), inset 0 -6px var(--go-lip), 0 0 0 3px var(--outline); }
-  .go.stop:active { box-shadow: inset 0 4px var(--halt-top), inset 0 -6px var(--halt-lip), 0 0 0 3px var(--outline); }
-  .go:focus-visible { outline: 3px solid var(--coin); outline-offset: 4px; }
+  /* chunky blocks sitting on their lip */
+  .go { height: 56px; background: var(--go); box-shadow: inset 0 4px var(--go-top), inset 0 -9px var(--go-lip), 0 0 0 2px var(--outline); }
+  .go.stop { background: var(--halt); box-shadow: inset 0 4px var(--halt-top), inset 0 -9px var(--halt-lip), 0 0 0 2px var(--outline); }
+  .go:active { transform: translateY(3px); }
 
-  .hint { margin-top: var(--space-md); min-height: 20px; color: var(--muted); font-size: 14px; text-align: center; }
+  .rec {
+    height: 56px; display: flex; align-items: center; justify-content: center; gap: var(--space-sm);
+    font-size: 14px; background: var(--asphalt-lift);
+    box-shadow: inset 0 3px oklch(0.37 0.012 265), inset 0 -7px var(--asphalt-deep), 0 0 0 2px var(--outline);
+  }
+  .rec:active { transform: translateY(3px); }
+  .rec i { width: 12px; height: 12px; background: var(--dash); box-shadow: 0 0 0 2px var(--outline); }
+  .rec[aria-pressed="true"] i { background: var(--halt-top); }
+  .rec[aria-pressed="false"] { color: var(--muted); }
+
+  .hint { min-height: 18px; color: var(--muted); font-size: 13px; text-align: center; margin-top: calc(-1 * var(--space-xs)); }
 
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 <main class="panel" id="panel">
-  <section class="field">
+  <header class="head">
+    <h1 class="status" id="status" aria-live="polite">Ready</h1>
     <div class="score" id="score" aria-label="Score">0</div>
-    <div class="top" id="top">Top 0</div>
-    <div class="ground" aria-hidden="true">
-      <svg class="chicken" id="chicken" viewBox="0 0 10 12">
-        <rect x="4" y="0" width="2" height="2" fill="oklch(0.6 0.22 27)"/>
-        <rect x="2" y="2" width="6" height="8" fill="oklch(0.98 0.004 250)"/>
-        <rect x="2" y="8" width="6" height="2" fill="oklch(0.86 0.01 250)"/>
-        <rect x="1" y="5" width="1" height="3" fill="oklch(0.9 0.008 250)"/>
-        <rect x="3" y="6" width="3" height="2" fill="oklch(0.86 0.01 250)"/>
-        <rect x="6" y="4" width="1" height="1" fill="oklch(0.17 0.012 265)"/>
-        <rect x="8" y="4" width="2" height="1" fill="oklch(0.78 0.16 62)"/>
-        <rect x="8" y="5" width="1" height="2" fill="oklch(0.6 0.22 27)"/>
-        <rect x="3" y="10" width="1" height="2" fill="oklch(0.74 0.16 58)"/>
-        <rect x="6" y="10" width="1" height="2" fill="oklch(0.74 0.16 58)"/>
-      </svg>
-      <div class="trees">
-        <svg class="tree short" viewBox="0 0 8 10">
-          <rect x="0" y="0" width="8" height="6" fill="oklch(0.64 0.15 124)"/>
-          <rect x="0" y="0" width="8" height="2" fill="oklch(0.74 0.16 121)"/>
-          <rect x="6" y="2" width="2" height="4" fill="oklch(0.56 0.13 126)"/>
-          <rect x="3" y="6" width="2" height="4" fill="oklch(0.38 0.06 35)"/>
-        </svg>
-        <svg class="tree" viewBox="0 0 8 12">
-          <rect x="0" y="0" width="8" height="8" fill="oklch(0.64 0.15 124)"/>
-          <rect x="0" y="0" width="8" height="2" fill="oklch(0.74 0.16 121)"/>
-          <rect x="6" y="2" width="2" height="6" fill="oklch(0.56 0.13 126)"/>
-          <rect x="3" y="8" width="2" height="4" fill="oklch(0.38 0.06 35)"/>
-        </svg>
-      </div>
-    </div>
+    <div class="best">Top<strong id="best">0</strong></div>
+  </header>
+
+  <p class="problem" id="problem" hidden></p>
+
+  <div class="map"><canvas id="map" aria-label="Lanes around the character"></canvas></div>
+
+  <div class="readouts">
+    <div class="readout"><span>Hops/s</span><strong id="rate">-</strong></div>
+    <div class="readout"><span>Frames/s</span><strong id="fps">-</strong></div>
+    <div class="readout"><span>Eyes</span><strong id="eyes">-</strong></div>
+  </div>
+
+  <section class="runs">
+    <h2>Runs</h2>
+    <ol id="runs"></ol>
   </section>
 
-  <section class="road">
-    <h1 class="status" id="status" aria-live="polite">Ready</h1>
-    <div class="stats">
-      <div class="stat"><span>Runs</span><strong id="runs">0</strong></div>
-      <div class="stat"><span>Hops/sec</span><strong id="rate">-</strong></div>
-    </div>
-    <p class="problem" id="problem" hidden></p>
+  <div class="controls">
+    <button class="rec" id="rec" aria-pressed="true"><i></i>Rec</button>
     <button class="go" id="go">Play</button>
-    <p class="hint" id="hint"></p>
-  </section>
+  </div>
+  <p class="hint" id="hint"></p>
 </main>
 
 <script>
   const STATUS = {
-    idle: "Ready", starting: "Getting set", playing: "Hopping",
-    over: "Splat!", "no phone": "Open iPhone Mirroring", stopped: "Stopped",
+    idle: ["Ready", ""], starting: ["Getting set", ""], playing: ["Hopping", "go"],
+    over: ["Splat!", "halt"], "no phone": ["Open iPhone Mirroring", "halt"], stopped: ["Stopped", ""],
   };
+  const ENDS = { splat: "Splat", stopped: "Stopped", lost: "Lost it" };
   const still = matchMedia("(prefers-reduced-motion: reduce)");
   const $ = (id) => document.getElementById(id);
 
-  let state = { running: false, status: "idle", score: null, best: 0, runs: 0, rate: null, error: null };
+  let state = { running: false, status: "idle", score: null, best: 0, runs: 0, rate: null, error: null,
+                fps: null, view: null, record: true, history: [], eyes: null };
   let shown = null;
 
   // pywebview's api shows up a beat after the page, so hold the call until it does
-  function call(name) {
+  function call(name, ...args) {
     const api = window.pywebview && window.pywebview.api;
-    if (api && api[name]) api[name]();
-    else window.addEventListener("pywebviewready", () => window.pywebview.api[name](), { once: true });
+    if (api && api[name]) api[name](...args);
+    else window.addEventListener("pywebviewready", () => window.pywebview.api[name](...args), { once: true });
   }
 
-  function hop(el, height) {
+  // the game's palette, read once so the canvas matches the page
+  const C = {
+    grass: ["oklch(0.83 0.17 128)", "oklch(0.79 0.175 131)"],
+    road: "oklch(0.36 0.012 265)", line: "oklch(0.55 0.012 265)",
+    water: "oklch(0.74 0.12 230)", foam: "oklch(0.86 0.06 225)",
+    rail: "oklch(0.42 0.02 300)", steel: "oklch(0.72 0.04 300)",
+    car: "oklch(0.64 0.19 30)", carTop: "oklch(0.93 0.02 250)",
+    log: "oklch(0.5 0.08 45)", logTop: "oklch(0.6 0.08 50)",
+    train: "oklch(0.55 0.12 255)", trainTop: "oklch(0.68 0.1 255)",
+    tree: "oklch(0.6 0.15 128)", treeTop: "oklch(0.7 0.16 124)",
+    outline: "oklch(0.17 0.012 265)", coin: "oklch(0.88 0.17 96)", snow: "oklch(0.97 0.005 250)",
+    fog: "oklch(0.22 0.012 265 / 0.55)", beak: "oklch(0.78 0.16 62)", comb: "oklch(0.6 0.22 27)",
+  };
+  const ROWS = 12, CHAR_ROW = 9, GUTTER = 30;
+  const canvas = $("map"), ctx = canvas.getContext("2d");
+
+  function size() {
+    const w = canvas.clientWidth, h = Math.round(w * 1.34);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    canvas.style.height = h + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    return [w, h];
+  }
+
+  // a block with a lighter top face and the outline the game draws around everything
+  function block(x, y, w, h, side, top) {
+    ctx.fillStyle = C.outline; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+    ctx.fillStyle = side; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = top; ctx.fillRect(x, y, w, Math.max(2, Math.round(h * 0.45)));
+  }
+
+  function chicken(cx, cy, s) {
+    const px = (x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(cx + x * s, cy + y * s, w * s, h * s); };
+    px(-3.5, -5.5, 7, 9, C.outline);
+    px(-3, -5, 6, 8, C.snow);
+    px(-1, -6.5, 2, 1.5, C.comb);
+    px(3, -3, 1.5, 1, C.beak);
+    px(1, -3.5, 1, 1, C.outline);
+  }
+
+  function arrow(cx, cy, move, s) {
+    const dirs = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+    if (move === "wait") {
+      ctx.fillStyle = C.outline; ctx.fillRect(cx + 7 * s - 1, cy - 5 * s - 1, 5 * s + 2, 6 * s + 2);
+      ctx.fillStyle = C.coin; ctx.fillRect(cx + 7 * s, cy - 5 * s, 2 * s, 6 * s); ctx.fillRect(cx + 10 * s, cy - 5 * s, 2 * s, 6 * s);
+      return;
+    }
+    const d = dirs[move]; if (!d) return;
+    const [dx, dy] = d, len = 9 * s, tip = cx + dx * (len + 6 * s), tipY = cy + dy * (len + 6 * s);
+    ctx.lineCap = "square";
+    ctx.strokeStyle = C.outline; ctx.lineWidth = 5 * s;
+    ctx.beginPath(); ctx.moveTo(cx + dx * 6 * s, cy + dy * 6 * s); ctx.lineTo(tip, tipY); ctx.stroke();
+    ctx.strokeStyle = C.coin; ctx.lineWidth = 2.5 * s;
+    ctx.beginPath(); ctx.moveTo(cx + dx * 6 * s, cy + dy * 6 * s); ctx.lineTo(tip, tipY); ctx.stroke();
+    ctx.fillStyle = C.coin; ctx.strokeStyle = C.outline; ctx.lineWidth = 1.5;
+    const px = -dy, py = dx, head = 5 * s;
+    ctx.beginPath();
+    ctx.moveTo(tip + dx * head, tipY + dy * head);
+    ctx.lineTo(tip + px * head, tipY + py * head);
+    ctx.lineTo(tip - px * head, tipY - py * head);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+
+  function map() {
+    const [full, h] = size();
+    const w = full - GUTTER;
+    const lane = h / ROWS, view = state.view;
+    const span = view ? view.span : 320, k = w / span;
+    ctx.fillStyle = "oklch(0.22 0.012 265)"; ctx.fillRect(w, 0, GUTTER, h);
+    const lanes = view ? view.lanes : Array.from({ length: ROWS }, (_, i) => ({ kind: "grass", speed: 0, things: [], unseen: [], blocked: [] }));
+    lanes.forEach((l, i) => {
+      const y = i * lane;
+      if (!l) { ctx.fillStyle = "oklch(0.24 0.012 265)"; ctx.fillRect(0, y, w, lane); return; }
+      const above = lanes[i - 1];
+      if (l.kind === "road") {
+        ctx.fillStyle = C.road; ctx.fillRect(0, y, w, lane);
+        if (above && above.kind === "road") {
+          ctx.fillStyle = C.line;
+          for (let x = 4; x < w; x += 22) ctx.fillRect(x, y - 1, 11, 2);
+        }
+      } else if (l.kind === "water") {
+        ctx.fillStyle = C.water; ctx.fillRect(0, y, w, lane);
+        ctx.fillStyle = C.foam; ctx.fillRect(0, y, w, 2);
+      } else if (l.kind === "rail") {
+        ctx.fillStyle = C.rail; ctx.fillRect(0, y, w, lane);
+        ctx.fillStyle = C.steel; ctx.fillRect(0, y + lane * 0.3, w, 2); ctx.fillRect(0, y + lane * 0.68, w, 2);
+      } else {
+        ctx.fillStyle = C.grass[i % 2]; ctx.fillRect(0, y, w, lane);
+      }
+
+      const inset = l.kind === "water" ? lane * 0.2 : lane * 0.14;
+      for (const [a, b] of l.things) {
+        const x = a * k, bw = Math.max((b - a) * k, 2), bh = lane - 2 * inset;
+        if (l.kind === "road") block(x, y + inset, bw, bh, C.car, C.carTop);
+        else if (l.kind === "water") block(x, y + inset, bw, bh, C.log, C.logTop);
+        else if (l.kind === "rail") block(x, y + inset, bw, bh, C.train, C.trainTop);
+        else block(x, y + inset, bw, bh, C.tree, C.treeTop);
+      }
+      // spots it hopped at and bounced off
+      for (const b of l.blocked) {
+        const x = b * k;
+        ctx.strokeStyle = C.outline; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x - 5, y + lane / 2 - 5); ctx.lineTo(x + 5, y + lane / 2 + 5); ctx.moveTo(x + 5, y + lane / 2 - 5); ctx.lineTo(x - 5, y + lane / 2 + 5); ctx.stroke();
+      }
+      // off screen for the helper, hatched like the edge of the world
+      for (const [a, b] of l.unseen) {
+        ctx.save(); ctx.beginPath(); ctx.rect(a * k, y, (b - a) * k, lane); ctx.clip();
+        ctx.fillStyle = C.fog; ctx.fillRect(a * k, y, (b - a) * k, lane);
+        ctx.strokeStyle = "oklch(0.17 0.012 265 / 0.35)"; ctx.lineWidth = 2;
+        for (let x = a * k - lane; x < b * k + lane; x += 7) { ctx.beginPath(); ctx.moveTo(x, y + lane); ctx.lineTo(x + lane, y); ctx.stroke(); }
+        ctx.restore();
+      }
+
+      if (view && Math.abs(l.speed) > 5 && l.kind !== "grass") {
+        ctx.font = "700 9px Silkscreen, monospace";
+        ctx.textBaseline = "middle"; ctx.textAlign = "center";
+        ctx.fillStyle = C.snow; ctx.fillText(Math.abs(l.speed), w + GUTTER / 2, y + lane * 0.62);
+        // which way it flows
+        const ax = w + GUTTER / 2, ay = y + lane * 0.27, d = Math.sign(l.speed);
+        ctx.fillStyle = C.coin;
+        ctx.beginPath(); ctx.moveTo(ax + d * 6, ay); ctx.lineTo(ax - d * 3, ay - 4); ctx.lineTo(ax - d * 3, ay + 4); ctx.closePath(); ctx.fill();
+        ctx.textAlign = "start";
+      }
+    });
+
+    // the character stands at the middle column of its lane
+    const cx = w / 2, cy = (CHAR_ROW + 0.58) * lane, s = lane / 10;
+    chicken(cx, cy, s);
+    if (view && view.move) arrow(cx, cy - 1 * s, view.move, s);
+  }
+
+  function hop(el) {
     if (still.matches) return;
-    el.animate(
-      [{ transform: "translateY(0)" }, { transform: `translateY(-${height}px)` }, { transform: "translateY(0)" }],
-      { duration: 200, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
-    );
+    el.animate([{ transform: "translateY(0)" }, { transform: "translateY(-6px)" }, { transform: "translateY(0)" }],
+               { duration: 180, easing: "cubic-bezier(0.22, 1, 0.36, 1)" });
+  }
+
+  function runs() {
+    const list = $("runs"), top = Math.max(0, ...state.history.map((r) => r.score));
+    if (!state.history.length) { list.innerHTML = '<li class="none">Your runs land here.</li>'; return; }
+    list.innerHTML = state.history.map((r) => {
+      const time = `${Math.floor(r.secs / 60)}:${String(r.secs % 60).padStart(2, "0")}`;
+      return `<li class="${r.score === top && top > 0 ? "top" : ""}"><b>${r.score}</b><time>${time}</time><em>${ENDS[r.end] || r.end}</em></li>`;
+    }).join("");
   }
 
   function draw() {
     const score = state.score ?? 0;
-    const el = $("score");
-    el.textContent = score;
-    el.dataset.len = Math.min(String(score).length, 4);
-    if (shown !== null && score > shown) { hop(el, 10); hop($("chicken"), 14); }
+    $("score").textContent = score;
+    if (shown !== null && score > shown) hop($("score"));
     shown = score;
+    $("best").textContent = state.best ?? 0;
 
-    $("top").textContent = `Top ${state.best ?? 0}`;
-    $("panel").classList.toggle("over", state.status === "over");
-    $("status").textContent = STATUS[state.status] || "Ready";
-    $("runs").textContent = state.runs ?? 0;
+    const [word, tone] = STATUS[state.status] || STATUS.idle;
+    $("status").textContent = word;
+    $("status").dataset.tone = tone;
+
     $("rate").textContent = state.rate == null ? "-" : state.rate.toFixed(1);
+    $("fps").textContent = state.fps == null ? "-" : Math.round(state.fps);
+    $("eyes").textContent = state.eyes === "model" ? "Model" : state.eyes === "colors" ? "Colors" : "-";
 
     $("problem").hidden = !state.error;
     $("problem").textContent = state.error || "";
@@ -255,16 +333,27 @@
     const go = $("go");
     go.classList.toggle("stop", state.running);
     go.textContent = state.running ? "Stop" : "Play";
-    $("hint").textContent = state.running ? "Move the mouse to stop" : "";
+    $("rec").setAttribute("aria-pressed", String(!!state.record));
+    $("hint").textContent = state.running ? "Move the mouse to stop" : state.record ? "Runs are saved for training" : "Runs are not saved";
+
+    map();
+    runs();
   }
 
   window.render = (next) => { state = { ...state, ...next }; draw(); };
+  window.addEventListener("resize", map);
 
   $("go").addEventListener("click", () => {
     if (state.running) { state = { ...state, running: false, status: "stopped" }; call("stop"); }
     else { state = { ...state, running: true, status: "starting", error: null }; call("start"); }
     draw();
   });
+  $("rec").addEventListener("click", () => {
+    state = { ...state, record: !state.record };
+    call("record", state.record);
+    draw();
+  });
+  document.fonts.ready.then(draw);
   draw();
 </script>
 </body>

@@ -27,6 +27,10 @@ COLUMNS = round(WIDTH + LEAN * HEIGHT) + 1
 SHEAR = np.float32([[1, 0, 0], [-SLOPE, 1, 2 * LIFT]])
 
 GRASS, ROAD, WATER, RAIL = "grass", "road", "water", "rail"
+# what the detector finds, and which of it fills each kind of lane
+CLASSES = ["vehicle", "train", "log", "lily_pad", "tree", "rock", "character"]
+FILLS = {ROAD: ("vehicle",), WATER: ("log", "lily_pad"), RAIL: ("train",), GRASS: ("tree", "rock")}
+DEPTH = 0.8 * 33.2  # how far an object reaches into its lane, sheared px
 
 # where the character waits on the home screen, canonical px
 HOME = (335, 990)
@@ -143,8 +147,37 @@ def blobs(mask: np.ndarray, y0: int, y1: int, smallest: int) -> np.ndarray:
     return out
 
 
-def read(frame: np.ndarray) -> View:
-    """One canonical frame to lanes, top to bottom."""
+def footprint(x0: float, y0: float, x1: float, y1: float) -> tuple[float, float, float]:
+    """Where a canonical box stands: sheared y of the middle of its footprint and the columns it covers."""
+    # things rise straight up, so the box's bottom is the front right corner and its left edge the front left
+    left, right = x0 * SCALE, x1 * SCALE - LEAN * DEPTH
+    front = y1 * SCALE - SLOPE * right + 2 * LIFT
+    return front - DEPTH / 2, column(left, front), column(right, front)
+
+
+class Detector:
+    """The trained object detector, boxes in canonical px."""
+
+    def __init__(self, weights: str):
+        import os
+
+        os.environ.setdefault("YOLO_CONFIG_DIR", os.path.join(os.path.dirname(weights), ".yolo"))
+        import torch
+        from ultralytics import YOLO
+
+        self.model = YOLO(weights)
+        # the Mac's GPU runs it in about 15 ms, the CPU takes several times that
+        self.device = "mps" if torch.backends.mps.is_available() else "cpu"
+
+    def __call__(self, frame: np.ndarray) -> list[tuple[str, float, float, float, float]]:
+        result = self.model.predict(frame, imgsz=960, conf=0.35, verbose=False, device=self.device)[0]
+        # one copy off the GPU, reading tensors element by element syncs it every time
+        cls, xyxy = result.boxes.cls.cpu().numpy(), result.boxes.xyxy.cpu().numpy()
+        return [(CLASSES[int(c)], *map(float, box)) for c, box in zip(cls, xyxy)]
+
+
+def read(frame: np.ndarray, boxes: list[tuple[str, float, float, float, float]] | None = None) -> View:
+    """One canonical frame to lanes, top to bottom, with things in them from detector boxes when given."""
     hsv = cv2.cvtColor(frame[1270:1380, 210:455], cv2.COLOR_BGR2HSV)
     over = ((hsv[..., 0] >= 10) & (hsv[..., 0] <= 28) & (hsv[..., 1] > 150) & (hsv[..., 2] > 200)).mean() > 0.5
     home = (frame[1385:1440].max(axis=2) < 45).mean() > 0.6
@@ -155,6 +188,7 @@ def read(frame: np.ndarray) -> View:
     lanes = []
     if phase is None:
         return View(None, lanes, bool(over), bool(home))
+    feet = [(name, *footprint(*box)) for name, *box in boxes or []]
     row = 0
     while phase + (row + 1) * LANE <= HEIGHT:
         top = phase + row * LANE
@@ -174,8 +208,13 @@ def read(frame: np.ndarray) -> View:
             signal = bool(m["glow"][y0:y1].sum() > 40)
         else:
             _, seen = profile(m["grass"], m["valid"], y0, y1)
-            solid = np.maximum(blobs(m["trunk"], y0 + LANE * 0.4, y1 + LANE * 0.2, 12),
-                               blobs(m["rock"], y0 + LANE * 0.4, y1 + LANE * 0.2, 60))
+            solid = None if boxes is not None else np.maximum(blobs(m["trunk"], y0 + LANE * 0.4, y1 + LANE * 0.2, 12),
+                                                              blobs(m["rock"], y0 + LANE * 0.4, y1 + LANE * 0.2, 60))
+        if boxes is not None:
+            solid = np.zeros(COLUMNS, np.float32)
+            for name, y, c0, c1 in feet:
+                if top <= y < top + LANE and name in FILLS.get(kind, ()):
+                    solid[max(int(c0), 0) : max(int(np.ceil(c1)), 0)] = 1
         lanes.append(Lane(row, kind, top, solid, seen, signal))
         row += 1
     return View(phase, lanes, bool(over), bool(home))

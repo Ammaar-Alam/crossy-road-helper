@@ -16,8 +16,20 @@ Give your terminal **Screen Recording** (to see the phone) and **Accessibility**
 ```bash
 ./run.sh            # panel beside the phone, press Play
 ./run.sh play       # one run without the panel
-./run.sh replay captures/live/<run>.mp4   # what the helper saw, lanes and moves drawn on top
+./run.sh replay captures/live/<run>.avi   # what the helper saw, lanes and moves drawn on top
 .venv/bin/python -m unittest -v
+```
+
+## The detector
+
+Cars, trains, logs, lily pads, trees, rocks and the character are found by a small YOLO model in `models/detector.pt`, so it does not depend on the character's skin or exact colors. To retrain it on newer runs, put `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in `.env`, then:
+
+```bash
+.venv/bin/python label.py frames           # sample frames from captures/live and the phone recording
+.venv/bin/python label.py gemini           # label them with Gemini, already labeled frames are skipped
+.venv/bin/python label.py export           # YOLO dataset, the newest runs held out for validation
+.venv/bin/python label.py train            # fine tune on the Mac GPU
+cp captures/runs/detect/weights/best.pt models/detector.pt
 ```
 
 While a run is going the helper owns the mouse. Move the mouse to stop it.
@@ -28,7 +40,7 @@ Each live run is saved under `captures/live/` with its frame times, so it can be
 
 - `capture.py` grabs the iPhone Mirroring window and sends taps and swipes as mouse events.
 - `screen.py` crops any capture to one canonical phone screen.
-- `vision.py` shears the screen so lanes run flat, finds the lane grid, tells grass, road, water and rails apart, and marks cars, logs, trees and trains per column. Columns are measured along the game's grid, so a forward hop keeps the same column.
+- `vision.py` shears the screen so lanes run flat, finds the lane grid, tells grass, road, water and rails apart, and places every detected object in its lane by where it stands. Columns are measured along the game's grid, so a forward hop keeps the same column.
 - `bot.py` follows lanes as the camera scrolls, measures each lane's speed, predicts traffic and searches a few moves ahead for the furthest safe hop.
 - `helper.py` runs the loop, `panel.py` and `panel.html` are the panel.
 
