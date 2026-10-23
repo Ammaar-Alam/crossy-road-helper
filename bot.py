@@ -13,6 +13,7 @@ from vision import GRASS, LANE, RAIL, ROAD, TILE, WATER
 HOP = 0.12  # seconds a hop takes
 LAG = 0.15  # seconds from the frame we read to our touch reaching the phone
 BODY = 0.35 * TILE  # half the character's width plus a margin
+SUPPORT = 6  # px either side of the middle that must be on a log or pad
 STAY = 0.35  # how long the last spot of a plan must stay safe
 ROUTE_AHEAD, ROUTE_BEHIND, ROUTE_SIDE = 4, 3, 7  # lanes and tiles the route finder looks over
 EDGE = 0.3  # hops a route's end is worth per tile away from the middle of the view
@@ -242,7 +243,8 @@ def safe(track: Track | None, c: float, t0: float, t1: float) -> bool:
             col = c + track.speed * (t - t0)
             if not view[0] + TILE / 2 <= col <= view[-1] - TILE / 2:
                 return False
-            if track.at(t, int(col - BODY / 2), int(col + BODY / 2) + 1).min() <= 0.5:
+            # landing snaps onto the log, so support just under the middle is enough
+            if track.at(t, int(col - SUPPORT), int(col + SUPPORT) + 1).min() <= 0.5:
                 return False
         return True
     if not track.measured and (solid[seen] > 0.5).any():
@@ -363,4 +365,5 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4, idle: fl
             span += 0.05
         return span
 
-    return max(MOVES, key=lasts)
+    # with nothing lasting at all, staying put at least does not walk into anything
+    return max(MOVES, key=lambda name: (lasts(name), name == "wait"))

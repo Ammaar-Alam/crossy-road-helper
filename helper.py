@@ -30,6 +30,8 @@ TITLE = 1.5  # seconds the title stays over the lanes after the first tap
 STYLES = [dict(steps=4, gap=0.02, hold=0.04), dict(steps=8, gap=0.012, hold=0.06),
           dict(steps=4, gap=0.02, hold=0.08), dict(steps=6, gap=0.02, hold=0.06)]
 ARC = 0.3
+# seconds after sending by which a move has shown up, landings show 0.25 to 0.35 s after the frame it was planned on
+SETTLE = bot.LAG + bot.HOP + 0.15
 MISSES = 4  # frames without seeing the character that are bridged from where it should be
 AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
 MODEL = ROOT / "models" / "detector.pt"
@@ -141,16 +143,17 @@ class Brain:
             self.world.slide([(int((y - self.world.phase) // V.LANE), (c0 + c1) / 2) for y, c0, c1 in feet])
         # moves that should have landed long ago and never showed up did not happen, something was in the way
         for sent_at, move, (lane, col) in self.pending:
-            if t - sent_at >= bot.LAG + bot.HOP + 0.25 and move != "wait":
+            if t - sent_at >= SETTLE and move != "wait":
                 dl, dc = bot.MOVES[move]
                 track = self.world.tracks.get(lane_of(lane) + dl)
                 if track is not None and track.kind == V.GRASS:
                     spot = col + dc
-                    # one missed swipe is not a tree, a second bounce at the same spot is
-                    if any(abs(b - spot) < V.TILE / 2 for b in track.bounced):
+                    # taps nearly always land, so a hop forward that did not is something in the way,
+                    # one missed swipe is not, a second bounce at the same spot is
+                    if move == "up" or any(abs(b - spot) < V.TILE / 2 for b in track.bounced):
                         track.blocked.append(spot)
                     track.bounced.append(spot)
-        self.pending = [p for p in self.pending if t - p[0] < bot.LAG + bot.HOP + 0.25]
+        self.pending = [p for p in self.pending if t - p[0] < SETTLE]
         box = None if self.pos is None or self.lost > 8 else self._box(self._expected(t))
         self.near = self._spot(boxes, box)
         # colors are only a fallback without the detector, a blue character over a blue river finds the river
@@ -171,6 +174,10 @@ class Brain:
         self.lost = 0
         x, y = V.to_sheared(*self.near)
         self.pos = ((y - self.world.phase) / V.LANE - self.world.scroll, V.column(x, y) - self.world.pan)
+        # wherever it stands is not blocked, whatever a bounce seemed to say
+        here = self.world.tracks.get(lane_of(self.pos[0]))
+        if here is not None:
+            here.blocked = [b for b in here.blocked if abs(b - self.pos[1]) >= V.TILE / 2]
         self.seen_at = t
         # a move has landed once the character got at least half way
         while self.pending:
