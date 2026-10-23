@@ -212,7 +212,8 @@ def read(frame: np.ndarray, boxes: list[tuple[str, float, float, float, float]] 
             solid, seen = profile(~(m["water"] | m["foam"]), m["valid"], int(top + 0.3 * LANE), int(top + 0.7 * LANE))
         elif kind == RAIL:
             solid, seen = profile(~(m["dark"] | m["log"] | m["rock"] | m["road"] | m["tree"]), m["valid"], *strip)
-            signal = bool(m["glow"][y0:y1].sum() > 40)
+            # the light and its glow sit on the front edge of the track and spill onto the lane in front
+            signal = bool(m["glow"][y0 : int(top + 1.5 * LANE)].sum() > 40)
         else:
             _, seen = profile(m["grass"], m["valid"], y0, y1)
             solid = None if boxes is not None else np.maximum(blobs(m["trunk"], y0 + LANE * 0.4, y1 + LANE * 0.2, 12),

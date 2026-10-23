@@ -11,7 +11,6 @@ import vision as V
 from vision import GRASS, LANE, RAIL, ROAD, TILE, WATER
 
 HOP = 0.12  # seconds a hop takes
-STEP = 0.22  # seconds between our hops, a frame has to come in and be read before the next one
 LAG = 0.15  # seconds from the frame we read to our touch reaching the phone
 BODY = 0.35 * TILE  # half the character's width plus a margin
 STAY = 0.35  # how long the last spot of a plan must stay safe
@@ -22,6 +21,10 @@ MAX_SPEED = 300  # px per second along a lane
 WINDOW = (0.1, 0.6)  # how far back, in seconds, frames are lined up to measure a lane's speed
 MOVES = {"up": (-1, 0.0), "left": (0, -TILE), "right": (0, TILE), "down": (1, 0.0), "wait": (0, 0.0)}
 COSTS = {"up": 0.0, "left": 1.0, "right": 1.0, "down": 1.0, "wait": 0.3}
+# seconds from one move to when the next can go, sideways landings show up later than hops forward
+TAKES = {"up": 0.24, "down": 0.26, "left": 0.3, "right": 0.3, "wait": 0.2}
+IDLE = 0.4  # extra cost of waiting per second without new progress, the eagle comes for anyone who dawdles
+WARNED = 4.0  # seconds a warning holds a rail closed when no train has come yet, trains came 0.6 to 3 s after it
 
 
 class Track:
@@ -35,7 +38,9 @@ class Track:
         # columns we hopped at and bounced off, whatever was there was not seen
         self.blocked: list[float] = []
         self.bounced: list[float] = []
-        self.signal_at = -1e9
+        # last flash of the warning light and last time a train was in view
+        self.flash = -1e9
+        self.passed = -1e9
         # since when each column has been solid, things that never move are not traffic
         self.since = np.full(V.COLUMNS, np.inf)
 
@@ -56,7 +61,7 @@ class Track:
         if lane.kind:
             self.kinds[lane.kind] += 1
         if lane.signal:
-            self.signal_at = t
+            self.flash = t
         # a frame that read this lane as something else would describe the wrong things in it
         if self.kind is not None and lane.kind != self.kind:
             return
@@ -83,6 +88,8 @@ class Track:
             v = self.fit(t, lane.solid, moving)
             if v is not None:
                 self.measure(v)
+        if self.kind == RAIL and (lane.solid[lane.seen] > 0.5).any():
+            self.passed = t
         self.history.append((t, lane.solid, lane.seen))
 
     def fit(self, t: float, solid: np.ndarray, moving: np.ndarray) -> float | None:
@@ -112,6 +119,10 @@ class Track:
         # a clear winner, not one of many equally poor guesses
         if not np.isfinite(rough[i]) or rough[i] > 0.6 * np.median(finite):
             return None
+        # two speeds that line up about as well, like evenly spaced cars, mean it cannot tell which
+        far = rough[np.abs(coarse - coarse[i]) > 30]
+        if np.isfinite(far).any() and rough[i] > 0.75 * far[np.isfinite(far)].min():
+            return None
         vs = np.arange(coarse[i] - 6, coarse[i] + 7, 1.0)
         score = scores(vs)
         i = int(np.argmin(score))
@@ -134,10 +145,13 @@ class Track:
             out[s0 - a : s1 - a] = np.where(seen[s0:s1], solid[s0:s1], fill)
         return out
 
-    def train(self) -> bool:
-        t, solid, seen = self.history[-1]
-        # the warning light flashes, so it counts for a while after each flash, and trains are long, any of one is too close
-        return t - self.signal_at < 1.0 or bool((solid[seen] > 0.5).any())
+    def train(self, t: float) -> bool:
+        """Whether a train is on this rail or may be by time t: one in view, or a warning it has not yet answered."""
+        _, solid, seen = self.history[-1]
+        if (solid[seen] > 0.5).any() or t - self.passed < 0.3:
+            return True
+        # the light flashes on and off and can be missed for a while, a warning holds until its train has gone by
+        return self.flash > self.passed and t - self.flash < WARNED
 
 
 class World:
@@ -220,9 +234,17 @@ def safe(track: Track | None, c: float, t0: float, t1: float) -> bool:
             return False
         return solid[int(c - BODY / 2) : int(c + BODY / 2) + 1].max(initial=0) < 0.5
     if track.kind == RAIL:
-        return not track.train()
+        return not track.train(t0)
     if track.kind == WATER:
-        return track.at(t0, int(c - BODY / 2), int(c + BODY / 2) + 1).min() > 0.5
+        # a rider moves with what it stands on, it needs support the whole time and must not be carried off screen
+        view = np.flatnonzero(seen)
+        for t in (t0, (t0 + t1) / 2, t1):
+            col = c + track.speed * (t - t0)
+            if not view[0] + TILE / 2 <= col <= view[-1] - TILE / 2:
+                return False
+            if track.at(t, int(col - BODY / 2), int(col + BODY / 2) + 1).min() <= 0.5:
+                return False
+        return True
     if not track.measured and (solid[seen] > 0.5).any():
         # cars whose speed is unknown could be anywhere soon
         return False
@@ -275,8 +297,8 @@ def routes(world: World, lane: int, c: float, now: float) -> dict[tuple[int, int
     return hops
 
 
-def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
-    """First move of the plan that gets furthest forward while staying safe."""
+def plan(world: World, lane: int, c: float, now: float, depth: int = 4, idle: float = 0.0) -> str:
+    """First move of the plan that gets furthest forward while staying safe, idle is seconds since the last new lane."""
     best = (-1e9, "wait")
 
     def drift(at: int, c: float, dt: float) -> float:
@@ -309,16 +331,18 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
 
     def attempt(at: int, c: float, t: float, left: int, name: str) -> float | None:
         """Score of making a move from here, None if it is not safe."""
-        here = world.tracks.get(at)
+        here, takes = world.tracks.get(at), TAKES[name]
         dl, dc = MOVES[name]
-        to, tc = at + dl, drift(at, c, STEP) + dc
+        cost = COSTS[name] + (IDLE * idle * takes if name in ("wait", "down") else 0.0)
         if name == "wait":
-            if not safe(here, c, t, t + STEP):
+            if not safe(here, c, t, t + takes):
                 return None
-        # after landing we stay put until the next hop can go
-        elif not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + STEP)):
+            return value(at, drift(at, c, takes), t + takes, left - 1) - cost
+        # what it stands on carries it until takeoff, what it lands on carries it after, and it stays put until the next move
+        to, tc = at + dl, drift(at, c, HOP / 2) + dc
+        if not (safe(here, c, t, t + HOP / 2) and safe(world.tracks.get(to), tc, t + HOP / 2, t + takes)):
             return None
-        return value(to, tc, t + STEP, left - 1) - COSTS[name]
+        return value(to, drift(to, tc, takes - HOP / 2), t + takes, left - 1) - cost
 
     for name in MOVES:
         score = attempt(lane, c, now + LAG, depth, name)
@@ -326,10 +350,17 @@ def plan(world: World, lane: int, c: float, now: float, depth: int = 4) -> str:
             best = (score, name)
     if best[0] > -1e8:
         return best[1]
-    # nothing is safe for long, so jump to wherever is clear on landing rather than wait to be hit
+    # nothing stays safe, so take whichever move keeps the character alive longest
     t = now + LAG
-    for name in ("up", "left", "right", "down"):
+
+    def lasts(name: str) -> float:
         dl, dc = MOVES[name]
-        if safe(world.tracks.get(lane + dl), drift(lane, c, HOP) + dc, t + HOP / 2, t + HOP + 0.05):
-            return name
-    return "wait"
+        if name != "wait" and not safe(world.tracks.get(lane), c, t, t + HOP / 2):
+            return 0.0
+        at, col, start = lane + dl, drift(lane, c, HOP / 2) + dc, t + (HOP / 2 if name != "wait" else 0.0)
+        span = 0.0
+        while span < 1.0 and safe(world.tracks.get(at), col, start, start + span + 0.05):
+            span += 0.05
+        return span
+
+    return max(MOVES, key=lasts)

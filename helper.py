@@ -30,6 +30,7 @@ TITLE = 1.5  # seconds the title stays over the lanes after the first tap
 STYLES = [dict(steps=4, gap=0.02, hold=0.04), dict(steps=8, gap=0.012, hold=0.06),
           dict(steps=4, gap=0.02, hold=0.08), dict(steps=6, gap=0.02, hold=0.06)]
 ARC = 0.3
+MISSES = 4  # frames without seeing the character that are bridged from where it should be
 AHEAD, BEHIND, SPAN = 9, 2, 160  # lanes and columns either side of the character the panel shows
 MODEL = ROOT / "models" / "detector.pt"
 COLORS = {V.GRASS: (60, 200, 90), V.ROAD: (120, 120, 120), V.WATER: (250, 200, 90), V.RAIL: (40, 60, 160), None: (0, 0, 255)}
@@ -81,6 +82,7 @@ class Brain:
         self.pending: list[tuple[float, str, tuple[float, float]]] = []
         self.lost = 0
         self.lanes: deque[int] = deque(maxlen=3)
+        self.progress_at: float | None = None
 
     def sent(self, move: str, t: float) -> None:
         if self.pos is not None:
@@ -126,6 +128,7 @@ class Brain:
 
     def step(self, frame: np.ndarray, t: float) -> str | None:
         """Read a frame taken at time t and return a move, or None when the character is not in sight."""
+        self.progress_at = t if self.progress_at is None else self.progress_at
         boxes = self.detector(frame) if self.detector is not None else None
         self.view = V.read(frame, boxes)
         if self.view.over or self.view.home:
@@ -158,8 +161,13 @@ class Brain:
         self.world.add(self.view, t)
         if self.near is None:
             self.lost += 1
-            self.spot = None
-            return None
+            # a few missed frames, over water or behind a car, are bridged from where it should be
+            if self.pos is None or self.lost > MISSES:
+                self.spot = None
+                return None
+            lane, c = self._expected(t)[-1]
+            self.spot = lane_of(lane), c
+            return bot.plan(self.world, lane_of(lane), c, t, idle=t - self.progress_at)
         self.lost = 0
         x, y = V.to_sheared(*self.near)
         self.pos = ((y - self.world.phase) / V.LANE - self.world.scroll, V.column(x, y) - self.world.pan)
@@ -168,19 +176,21 @@ class Brain:
         while self.pending:
             _, move, (lane0, col0) = self.pending[0]
             dl, dc = bot.MOVES[move]
-            if (dl and (self.pos[0] - lane0) * dl > 0.5) or (dc and (self.pos[1] - col0) * dc > 0.5 * V.TILE ** 2):
+            # sideways it must be most of the way over, a hop forward reads as further along while in the air
+            if (dl and (self.pos[0] - lane0) * dl > 0.5) or (dc and (self.pos[1] - col0) * dc > 0.7 * V.TILE ** 2):
                 self.pending.pop(0)
             else:
                 break
         # the score only counts lanes the character was seen in for a few frames, not a glimpse mid hop or after a hit
         self.lanes.append(lane_of(self.pos[0]))
         self.start = self.lanes[0] if self.start is None else self.start
-        if len(self.lanes) == self.lanes.maxlen:
-            self.best = max(self.best, self.start - max(self.lanes))
+        if len(self.lanes) == self.lanes.maxlen and self.start - max(self.lanes) > self.best:
+            self.best = self.start - max(self.lanes)
+            self.progress_at = t
         lane, c = self._expected(t)[-1]
         lane = lane_of(lane)
         self.spot = lane, c
-        return bot.plan(self.world, lane, c, t)
+        return bot.plan(self.world, lane, c, t, idle=t - self.progress_at)
 
     def snapshot(self, move: str | None) -> dict | None:
         """The lanes around the character as the panel draws them, columns relative to the character."""
